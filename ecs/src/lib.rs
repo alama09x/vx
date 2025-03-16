@@ -1,8 +1,16 @@
-pub mod component;
-pub mod manager;
-pub mod resource;
-pub mod schedule;
-pub mod system;
+mod component;
+mod manager;
+mod query;
+mod resource;
+mod schedule;
+mod system;
+
+pub use component::*;
+pub use manager::*;
+pub use query::*;
+pub use resource::*;
+pub use schedule::*;
+pub use system::*;
 
 pub fn add(left: u64, right: u64) -> u64 {
     left + right

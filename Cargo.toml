@@ -1,3 +1,3 @@
 [workspace]
 resolver = "2"
-members = ["data", "ecs", "gfx", "tests"]
+members = [ "app","data", "ecs", "gfx", "tests"]

@@ -1,8 +1,8 @@
-# voxel-engine
+# VX Engine
 
 ## ECS API
 
-My own implementation of an **entity compnoent system**
+My own implementation of an **entity component system**
 Goals:
 
 - Parallel & efficient
