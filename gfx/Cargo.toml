@@ -6,4 +6,6 @@ edition = "2021"
 [dependencies]
 ash = "0.38.0"
 ash-window = "0.13.0"
+bytemuck = "1.22.0"
+glam = "0.30.1"
 winit = "0.30.9"
