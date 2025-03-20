@@ -52,9 +52,23 @@ impl ApplicationHandler for VxApplication {
         _window_id: winit::window::WindowId,
         event: winit::event::WindowEvent,
     ) {
-        if let WindowEvent::CloseRequested = event {
-            self.state = None;
-            event_loop.exit();
+        match event {
+            WindowEvent::CloseRequested => {
+                self.state = None;
+                event_loop.exit();
+            }
+            WindowEvent::RedrawRequested => {
+                if let Some(ref mut state) = self.state {
+                    state.draw_frame().unwrap();
+                    state.window.request_redraw();
+                }
+            }
+            WindowEvent::Resized(_) => {
+                if let Some(ref mut state) = self.state {
+                    state.recreate_swapchain().unwrap();
+                }
+            }
+            _ => (),
         }
     }
 }
