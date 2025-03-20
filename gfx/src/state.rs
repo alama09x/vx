@@ -17,7 +17,7 @@ use ash::{
     ext::debug_utils,
     khr::{surface, swapchain},
     prelude::VkResult,
-    vk::{self, Handle},
+    vk,
 };
 use winit::{
     dpi::LogicalSize,
@@ -27,17 +27,18 @@ use winit::{
     window::{Window, WindowAttributes},
 };
 
+#[allow(dead_code)]
 pub struct VxState {
+    window: Window,
+    entry: ash::Entry,
     instance: ash::Instance,
     debug_utils_loader: debug_utils::Instance,
     debug_messenger: vk::DebugUtilsMessengerEXT,
-
     surface: vk::SurfaceKHR,
     surface_loader: surface::Instance,
-
     physical_device: vk::PhysicalDevice,
     queue_family_indices: QueueFamilyIndices,
-    pub device: ash::Device,
+    device: ash::Device,
     queues: Queues,
 
     swapchain_loader: swapchain::Device,
@@ -68,17 +69,20 @@ impl VxState {
     pub fn new(
         app_name: &'static str,
         app_version: u32,
-        window: &Window,
+        window_title: &str,
+        window_size: &LogicalSize<f32>,
+        event_loop: &ActiveEventLoop,
     ) -> Result<Self, Box<dyn Error>> {
         unsafe {
+            let window = Self::create_window(window_title, window_size, event_loop)?;
             let entry = ash::Entry::load()?;
-            let instance = Self::create_instance(&entry, app_name, app_version, window)?;
+            let instance = Self::create_instance(&entry, app_name, app_version, event_loop)?;
 
             let debug_utils_loader = debug_utils::Instance::new(&entry, &instance);
             let debug_messenger = Self::create_debug_messenger(&debug_utils_loader)?;
 
             let surface_loader = surface::Instance::new(&entry, &instance);
-            let surface = Self::create_surface(&entry, &instance, window)?;
+            let surface = Self::create_surface(&entry, &instance, &window)?;
 
             let (physical_device, queue_family_indices) =
                 Self::pick_physical_device(&instance, &surface_loader, &surface)?;
@@ -94,7 +98,7 @@ impl VxState {
                     &surface_loader,
                     &surface,
                     &swapchain_loader,
-                    window,
+                    &window,
                     &queue_family_indices,
                 )?;
 
@@ -108,13 +112,13 @@ impl VxState {
                 Self::create_graphics_pipeline(&device, &render_pass, &descriptor_set_layout)?;
 
             Ok(Self {
+                window,
+                entry,
                 instance,
                 debug_utils_loader,
                 debug_messenger,
-
                 surface,
                 surface_loader,
-
                 physical_device,
                 queue_family_indices,
                 device,
@@ -152,7 +156,7 @@ impl VxState {
         entry: &ash::Entry,
         app_name: &str,
         app_version: u32,
-        window: &Window,
+        event_loop: &ActiveEventLoop,
     ) -> Result<ash::Instance, Box<dyn Error>> {
         let app_name_raw = CString::new(app_name).unwrap();
         let engine_name_raw = CString::new(Self::ENGINE_NAME).unwrap();
@@ -166,7 +170,8 @@ impl VxState {
             .api_version(Self::API_VERSION);
 
         let mut extension_names =
-            ash_window::enumerate_required_extensions(window.display_handle()?.as_raw())?.to_vec();
+            ash_window::enumerate_required_extensions(event_loop.display_handle()?.as_raw())?
+                .to_vec();
         extension_names.push(debug_utils::NAME.as_ptr());
 
         #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -766,36 +771,23 @@ impl QueueFamilyIndices {
 impl Drop for VxState {
     fn drop(&mut self) {
         unsafe {
-            println!("Destroying pipeline");
             self.device.destroy_pipeline(self.pipeline, None);
-            println!("Destroying pipeline layout");
             self.device
                 .destroy_pipeline_layout(self.pipeline_layout, None);
-            println!("Destroying desc set layout");
             self.device
                 .destroy_descriptor_set_layout(self.descriptor_set_layout, None);
             self.device.destroy_render_pass(self.render_pass, None);
 
-            println!("Cleaning up swapchain");
             Self::cleanup_swapchain(
                 &self.device,
                 &self.swapchain_loader,
                 &self.swapchain,
                 &self.swapchain_image_views,
             );
-            println!("Destroying device");
             self.device.destroy_device(None);
-            println!("Destroying surface");
-            if !self.surface.is_null() {
-                println!("Surface handle: {:?}", self.surface);
-                self.surface_loader.destroy_surface(self.surface, None);
-            } else {
-                println!("Surface is null");
-            }
-            println!("Destroying debug messenger");
+            self.surface_loader.destroy_surface(self.surface, None);
             self.debug_utils_loader
                 .destroy_debug_utils_messenger(self.debug_messenger, None);
-            println!("Destroying instance");
             self.instance.destroy_instance(None);
         }
     }
