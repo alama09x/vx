@@ -14,9 +14,9 @@ use bevy_input::{
     mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll},
     ButtonInput,
 };
-use bevy_window::{PrimaryWindow, Window, WindowFocused};
+use bevy_window::{PrimaryWindow, WindowFocused};
 use data::{camera::CameraFov, transform::Transform};
-use glam::{EulerRot, Quat, Vec2, Vec3};
+use glam::{EulerRot, Quat, Vec3};
 
 use crate::time_plugin::Time;
 
