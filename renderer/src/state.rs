@@ -85,7 +85,7 @@ impl VxState {
         ash::khr::portability_subset::NAME,
     ];
 
-    const VERTICES: [Vertex; 4] = [
+    const VERTICES: [Vertex; 8] = [
         Vertex {
             pos: [0.0, 0.0, 0.0],
             color: [1.0, 0.0, 0.0],
@@ -102,9 +102,25 @@ impl VxState {
             pos: [-0.5, 0.0, 0.0],
             color: [0.0, 0.0, 1.0],
         },
+        Vertex {
+            pos: [0.0, 0.0, -0.5],
+            color: [1.0, 0.0, 0.0],
+        },
+        Vertex {
+            pos: [0.0, 0.0, 0.0],
+            color: [0.0, 1.0, 0.0],
+        },
+        Vertex {
+            pos: [-0.5, 0.0, 0.0],
+            color: [0.0, 0.0, 1.0],
+        },
+        Vertex {
+            pos: [-0.5, 0.0, -0.5],
+            color: [0.0, 0.0, 1.0],
+        },
     ];
 
-    const INDICES: [u16; 6] = [0, 1, 2, 0, 2, 3];
+    const INDICES: [u16; 12] = [0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7];
 
     pub fn new(
         app_name: &'static str,
@@ -815,11 +831,11 @@ impl VxState {
     ) -> VkResult<Vec<vk::Framebuffer>> {
         swapchain_image_views
             .iter()
-            .map(|image_view| {
+            .map(|&image_view| {
                 device.create_framebuffer(
                     &vk::FramebufferCreateInfo::default()
                         .render_pass(render_pass)
-                        .attachments(slice::from_ref(image_view))
+                        .attachments(&[image_view])
                         .width(swapchain_extent.width)
                         .height(swapchain_extent.height)
                         .layers(1),
@@ -882,71 +898,69 @@ impl VxState {
         let pipelines = device
             .create_graphics_pipelines(
                 vk::PipelineCache::null(),
-                slice::from_ref(
-                    &vk::GraphicsPipelineCreateInfo::default()
-                        .stages(&[
-                            vk::PipelineShaderStageCreateInfo::default()
-                                .stage(vk::ShaderStageFlags::VERTEX)
-                                .module(vert_shader_module)
-                                .name(c"main"),
-                            vk::PipelineShaderStageCreateInfo::default()
-                                .stage(vk::ShaderStageFlags::FRAGMENT)
-                                .module(frag_shader_module)
-                                .name(c"main"),
-                        ])
-                        .vertex_input_state(
-                            &vk::PipelineVertexInputStateCreateInfo::default()
-                                .vertex_binding_descriptions(slice::from_ref(
-                                    &Vertex::BINDING_DESCRIPTION,
-                                ))
-                                .vertex_attribute_descriptions(&Vertex::ATTRIBUTE_DESCRIPTIONS),
-                        )
-                        .input_assembly_state(
-                            &vk::PipelineInputAssemblyStateCreateInfo::default()
-                                .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-                                .primitive_restart_enable(false),
-                        )
-                        .viewport_state(
-                            &vk::PipelineViewportStateCreateInfo::default()
-                                .viewport_count(1)
-                                .scissor_count(1),
-                        )
-                        .rasterization_state(
-                            &vk::PipelineRasterizationStateCreateInfo::default()
-                                .depth_clamp_enable(false)
-                                .rasterizer_discard_enable(false)
-                                .polygon_mode(vk::PolygonMode::FILL)
-                                .line_width(1.0)
-                                .cull_mode(vk::CullModeFlags::BACK)
-                                .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-                                .depth_bias_enable(false),
-                        )
-                        .multisample_state(
-                            &vk::PipelineMultisampleStateCreateInfo::default()
-                                .sample_shading_enable(false)
-                                .rasterization_samples(vk::SampleCountFlags::TYPE_1),
-                        )
-                        .color_blend_state(
-                            &vk::PipelineColorBlendStateCreateInfo::default()
-                                .logic_op_enable(false)
-                                .logic_op(vk::LogicOp::COPY)
-                                .attachments(slice::from_ref(
-                                    &vk::PipelineColorBlendAttachmentState::default()
-                                        .color_write_mask(vk::ColorComponentFlags::RGBA)
-                                        .blend_enable(false),
-                                ))
-                                .blend_constants([0.0, 0.0, 0.0, 0.0]),
-                        )
-                        .dynamic_state(
-                            &vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&[
-                                vk::DynamicState::VIEWPORT,
-                                vk::DynamicState::SCISSOR,
-                            ]),
-                        )
-                        .layout(pipeline_layout)
-                        .render_pass(render_pass)
-                        .subpass(0),
-                ),
+                &[vk::GraphicsPipelineCreateInfo::default()
+                    .stages(&[
+                        vk::PipelineShaderStageCreateInfo::default()
+                            .stage(vk::ShaderStageFlags::VERTEX)
+                            .module(vert_shader_module)
+                            .name(c"main"),
+                        vk::PipelineShaderStageCreateInfo::default()
+                            .stage(vk::ShaderStageFlags::FRAGMENT)
+                            .module(frag_shader_module)
+                            .name(c"main"),
+                    ])
+                    .vertex_input_state(
+                        &vk::PipelineVertexInputStateCreateInfo::default()
+                            .vertex_binding_descriptions(slice::from_ref(
+                                &Vertex::BINDING_DESCRIPTION,
+                            ))
+                            .vertex_attribute_descriptions(&Vertex::ATTRIBUTE_DESCRIPTIONS),
+                    )
+                    .input_assembly_state(
+                        &vk::PipelineInputAssemblyStateCreateInfo::default()
+                            .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+                            .primitive_restart_enable(false),
+                    )
+                    .viewport_state(
+                        &vk::PipelineViewportStateCreateInfo::default()
+                            .viewport_count(1)
+                            .scissor_count(1),
+                    )
+                    .rasterization_state(
+                        &vk::PipelineRasterizationStateCreateInfo::default()
+                            .depth_clamp_enable(false)
+                            .rasterizer_discard_enable(false)
+                            .polygon_mode(vk::PolygonMode::FILL)
+                            .line_width(1.0)
+                            .cull_mode(vk::CullModeFlags::BACK)
+                            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+                            .depth_bias_enable(false),
+                    )
+                    .multisample_state(
+                        &vk::PipelineMultisampleStateCreateInfo::default()
+                            .sample_shading_enable(false)
+                            .rasterization_samples(vk::SampleCountFlags::TYPE_1),
+                    )
+                    .color_blend_state(
+                        &vk::PipelineColorBlendStateCreateInfo::default()
+                            .logic_op_enable(false)
+                            .logic_op(vk::LogicOp::COPY)
+                            .attachments(slice::from_ref(
+                                &vk::PipelineColorBlendAttachmentState::default()
+                                    .color_write_mask(vk::ColorComponentFlags::RGBA)
+                                    .blend_enable(false),
+                            ))
+                            .blend_constants([0.0, 0.0, 0.0, 0.0]),
+                    )
+                    .dynamic_state(
+                        &vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&[
+                            vk::DynamicState::VIEWPORT,
+                            vk::DynamicState::SCISSOR,
+                        ]),
+                    )
+                    .layout(pipeline_layout)
+                    .render_pass(render_pass)
+                    .subpass(0)],
                 None,
             )
             .map_err(|_| vk::Result::ERROR_UNKNOWN)?;
