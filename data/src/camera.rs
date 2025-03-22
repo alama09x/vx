@@ -8,21 +8,18 @@ use crate::{transform::Transform, IntoRaw, MoveDirection};
 #[derive(Clone, Copy)]
 pub struct Camera {
     transform: Transform,
-    view: Mat4,
     projection: Mat4,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct CameraRaw {
-    pub model: [[f32; 4]; 4],
-    pub view_projection: [[f32; 4]; 4],
+    pub view: [[f32; 4]; 4],
+    pub projection: [[f32; 4]; 4],
 }
 
 impl Camera {
     pub fn new(transform: Transform, window_width: f32, window_height: f32) -> Self {
-        let view = transform.to_mat4().inverse();
-
         let projection = Mat4::perspective_rh(
             45.0f32.to_radians(),
             window_width / window_height,
@@ -32,13 +29,12 @@ impl Camera {
 
         Self {
             transform,
-            view,
             projection,
         }
     }
 
     pub fn translate(&mut self, translation: Vec3) {
-        self.transform.translation -= translation;
+        self.transform.translation += translation;
     }
 
     const MOVE_SPEED: f32 = 3.0;
@@ -63,11 +59,11 @@ impl Camera {
         let dyaw = dx * Self::YAW_SPEED;
         let dpitch = -dy * Self::PITCH_SPEED;
 
-        let (yaw, pitch, _roll) = self.view.to_euler(EulerRot::YXZ);
+        let (yaw, pitch, _roll) = self.transform.rotation.to_euler(EulerRot::YXZ);
         let yaw = yaw - dyaw;
         let pitch = (pitch - dpitch).clamp(-Self::PITCH_LIMIT, Self::PITCH_LIMIT);
 
-        self.projection *= Mat4::from_quat(Quat::from_euler(EulerRot::YXZ, -yaw, -pitch, 0.0));
+        self.transform.rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0);
     }
 }
 
@@ -76,8 +72,8 @@ impl IntoRaw for Camera {
 
     fn to_raw(&self) -> Self::Raw {
         Self::Raw {
-            model: self.transform.to_mat4().to_cols_array_2d(),
-            view_projection: (self.view * self.projection).to_cols_array_2d(),
+            view: self.transform.to_mat4().inverse().to_cols_array_2d(),
+            projection: self.projection.to_cols_array_2d(),
         }
     }
 }

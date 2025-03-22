@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use data::{camera::Camera, MoveDirection};
+use data::MoveDirection;
 use gfx::state::VxState;
 use winit::{
     application::ApplicationHandler,
@@ -110,13 +110,7 @@ impl ApplicationHandler for VxApplication {
 
             if let Some(ref mut state) = self.state {
                 let (dx, dy) = delta;
-                for uniform_buffers in &mut state.uniform_buffers {
-                    if let Some(camera) = uniform_buffers.data.as_any_mut().downcast_mut::<Camera>()
-                    {
-                        println!("Rotating camera");
-                        camera.rotate_by_mouse_movement(dx as f32, dy as f32);
-                    }
-                }
+                state.camera.rotate_by_mouse_movement(dx as f32, dy as f32);
             }
         }
     }
@@ -137,14 +131,7 @@ impl ApplicationHandler for VxApplication {
                 if let Some(ref mut state) = self.state {
                     for &key in &self.keys {
                         if let Some(direction) = Self::direction_from_key(key) {
-                            for uniform_buffers in &mut state.uniform_buffers {
-                                if let Some(camera) =
-                                    uniform_buffers.data.as_any_mut().downcast_mut::<Camera>()
-                                {
-                                    println!("Moving camera");
-                                    camera.move_in_direction(direction, state.delta_time);
-                                }
-                            }
+                            state.camera.move_in_direction(direction, state.delta_time);
                         }
                     }
                     state.draw_frame().unwrap();

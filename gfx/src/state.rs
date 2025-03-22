@@ -20,7 +20,7 @@ use ash::{
     prelude::VkResult,
     vk,
 };
-use data::{transform::Transform, DynIntoRaw};
+use data::{camera::CameraRaw, transform::Transform, DynIntoRaw};
 use winit::{
     dpi::LogicalSize,
     event_loop::ActiveEventLoop,
@@ -63,7 +63,9 @@ pub struct VxState {
     index_buffer: vk::Buffer,
     index_buffer_memory: vk::DeviceMemory,
 
-    pub uniform_buffers: Vec<UniformBuffers<dyn DynIntoRaw>>,
+    uniform_buffers: Vec<vk::Buffer>,
+    uniform_buffers_memory: Vec<vk::DeviceMemory>,
+    uniform_buffers_mapped: Vec<*mut c_void>,
 
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: Vec<vk::DescriptorSet>,
@@ -78,13 +80,8 @@ pub struct VxState {
     previous_time: Instant,
     elapsed_time: f32,
     pub delta_time: f32,
-}
 
-pub struct UniformBuffers<T: 'static + ?Sized> {
-    pub data: Box<T>,
-    pub buffers: Vec<vk::Buffer>,
-    pub memory: Vec<vk::DeviceMemory>,
-    pub mapped: Vec<*mut c_void>,
+    pub camera: Camera,
 }
 
 const MAX_FRAMES_IN_FLIGHT: u8 = 2;
@@ -170,18 +167,7 @@ impl VxState {
                 &swapchain_extent,
             )?;
 
-            let transform = Box::new(Transform::from_xyz(0.0, 0.0, 16.0));
-
-            let camera = Box::new(Camera::new(
-                Transform::from_xyz(0.0, 0.0, 16.0),
-                window_size.width,
-                window_size.height,
-            ));
-
-            let uniform_data: Vec<Box<dyn DynIntoRaw>> = vec![transform, camera];
-
-            let descriptor_set_layout =
-                Self::create_descriptor_set_layout(&device, uniform_data.len())?;
+            let descriptor_set_layout = Self::create_descriptor_set_layout(&device)?;
             let (pipeline_layout, pipeline) =
                 Self::create_graphics_pipeline(&device, render_pass, descriptor_set_layout)?;
 
@@ -204,12 +190,13 @@ impl VxState {
                 queues.graphics,
             )?;
 
-            let uniform_buffers = Self::create_all_uniform_buffers(
-                &instance,
-                &device,
-                physical_device,
-                uniform_data,
-            )?;
+            let (uniform_buffers, uniform_buffers_memory, uniform_buffers_mapped) =
+                Self::create_uniform_buffers(
+                    &instance,
+                    &device,
+                    physical_device,
+                    MAX_FRAMES_IN_FLIGHT,
+                )?;
 
             let descriptor_pool = Self::create_descriptor_pool(&device)?;
             let descriptor_sets = Self::create_descriptor_sets(
@@ -224,6 +211,12 @@ impl VxState {
             let sync_objects = SyncObjects::new(&device)?;
 
             let current_time = Instant::now();
+
+            let camera = Camera::new(
+                Transform::from_xyz(0.0, 0.0, 16.0),
+                window_size.width,
+                window_size.height,
+            );
 
             Ok(Self {
                 window,
@@ -259,6 +252,8 @@ impl VxState {
                 index_buffer_memory,
 
                 uniform_buffers,
+                uniform_buffers_memory,
+                uniform_buffers_mapped,
 
                 descriptor_pool,
                 descriptor_sets,
@@ -274,6 +269,8 @@ impl VxState {
                 previous_time: current_time,
                 elapsed_time: 0.0,
                 delta_time: 0.0,
+
+                camera,
             })
         }
     }
@@ -292,13 +289,11 @@ impl VxState {
     }
 
     unsafe fn update_uniform_buffers(&mut self) -> VkResult<()> {
-        for uniform_buffers in &self.uniform_buffers {
-            ptr::copy_nonoverlapping(
-                uniform_buffers.data.to_bytes().as_ptr() as *const c_void,
-                uniform_buffers.mapped[self.current_frame as usize],
-                uniform_buffers.data.raw_size(),
-            );
-        }
+        ptr::copy_nonoverlapping(
+            self.camera.to_bytes().as_ptr() as *const c_void,
+            self.uniform_buffers_mapped[self.current_frame as usize],
+            mem::size_of::<CameraRaw>(),
+        );
 
         Ok(())
     }
@@ -828,20 +823,15 @@ impl VxState {
 
     unsafe fn create_descriptor_set_layout(
         device: &ash::Device,
-        uniform_buffer_count: usize,
     ) -> VkResult<vk::DescriptorSetLayout> {
         device.create_descriptor_set_layout(
-            &vk::DescriptorSetLayoutCreateInfo::default().bindings(
-                &(0..uniform_buffer_count)
-                    .map(|binding| {
-                        vk::DescriptorSetLayoutBinding::default()
-                            .binding(binding as u32)
-                            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                            .descriptor_count(1)
-                            .stage_flags(vk::ShaderStageFlags::VERTEX)
-                    })
-                    .collect::<Vec<_>>(),
-            ),
+            &vk::DescriptorSetLayoutCreateInfo::default().bindings(&[
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(0)
+                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::VERTEX),
+            ]),
             None,
         )
     }
@@ -1249,14 +1239,13 @@ impl VxState {
         )
     }
 
-    unsafe fn create_uniform_buffers<T: DynIntoRaw + ?Sized>(
+    unsafe fn create_uniform_buffers(
         instance: &ash::Instance,
         device: &ash::Device,
         physical_device: vk::PhysicalDevice,
         frames: u8,
-        data: Box<T>,
-    ) -> VkResult<UniformBuffers<T>> {
-        let buffer_size = data.raw_size() as u64;
+    ) -> VkResult<(Vec<vk::Buffer>, Vec<vk::DeviceMemory>, Vec<*mut c_void>)> {
+        let buffer_size = mem::size_of::<CameraRaw>() as u64;
 
         let mut buffers = Vec::with_capacity(frames as usize);
         let mut memory = Vec::with_capacity(frames as usize);
@@ -1278,31 +1267,7 @@ impl VxState {
             mapped.push(map);
         }
 
-        Ok(UniformBuffers {
-            data,
-            buffers,
-            memory,
-            mapped,
-        })
-    }
-
-    unsafe fn create_all_uniform_buffers(
-        instance: &ash::Instance,
-        device: &ash::Device,
-        physical_device: vk::PhysicalDevice,
-        data: Vec<Box<dyn DynIntoRaw>>,
-    ) -> VkResult<Vec<UniformBuffers<dyn DynIntoRaw>>> {
-        data.into_iter()
-            .map(|data| {
-                Self::create_uniform_buffers(
-                    instance,
-                    device,
-                    physical_device,
-                    MAX_FRAMES_IN_FLIGHT,
-                    data,
-                )
-            })
-            .collect()
+        Ok((buffers, memory, mapped))
     }
 
     unsafe fn create_descriptor_pool(device: &ash::Device) -> VkResult<vk::DescriptorPool> {
@@ -1321,7 +1286,7 @@ impl VxState {
         device: &ash::Device,
         descriptor_pool: vk::DescriptorPool,
         descriptor_set_layout: vk::DescriptorSetLayout,
-        uniform_buffers: &Vec<UniformBuffers<dyn DynIntoRaw>>,
+        uniform_buffers: &[vk::Buffer],
     ) -> VkResult<Vec<vk::DescriptorSet>> {
         let descriptor_sets = device.allocate_descriptor_sets(
             &vk::DescriptorSetAllocateInfo::default()
@@ -1330,30 +1295,17 @@ impl VxState {
         )?;
 
         for (frame, &descriptor_set) in descriptor_sets.iter().enumerate() {
-            let buffer_infos: Vec<_> = uniform_buffers
-                .iter()
-                .map(|uniform_buffers| {
-                    [vk::DescriptorBufferInfo::default()
-                        .buffer(uniform_buffers.buffers[frame])
-                        .offset(0)
-                        .range(uniform_buffers.data.raw_size() as u64)]
-                })
-                .collect();
-
             device.update_descriptor_sets(
-                &buffer_infos
-                    .iter()
-                    .enumerate()
-                    .map(|(binding, buffer_infos)| {
-                        vk::WriteDescriptorSet::default()
-                            .dst_set(descriptor_set)
-                            .dst_binding(binding as u32)
-                            .dst_array_element(0)
-                            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                            .descriptor_count(1)
-                            .buffer_info(buffer_infos)
-                    })
-                    .collect::<Vec<_>>(),
+                &[vk::WriteDescriptorSet::default()
+                    .dst_set(descriptor_set)
+                    .dst_binding(0)
+                    .dst_array_element(0)
+                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                    .descriptor_count(1)
+                    .buffer_info(&[vk::DescriptorBufferInfo::default()
+                        .buffer(uniform_buffers[frame])
+                        .offset(0)
+                        .range(mem::size_of::<CameraRaw>() as u64)])],
                 &[],
             );
         }
@@ -1548,13 +1500,12 @@ impl Drop for VxState {
             self.device
                 .destroy_descriptor_pool(self.descriptor_pool, None);
 
-            for uniform_buffers in &self.uniform_buffers {
-                for frame in 0..uniform_buffers.buffers.len() {
-                    self.device.unmap_memory(uniform_buffers.memory[frame]);
-                    self.device
-                        .destroy_buffer(uniform_buffers.buffers[frame], None);
-                    self.device.free_memory(uniform_buffers.memory[frame], None);
-                }
+            for frame in 0..MAX_FRAMES_IN_FLIGHT as usize {
+                self.device.unmap_memory(self.uniform_buffers_memory[frame]);
+                self.device
+                    .destroy_buffer(self.uniform_buffers[frame], None);
+                self.device
+                    .free_memory(self.uniform_buffers_memory[frame], None);
             }
 
             self.device.destroy_buffer(self.index_buffer, None);
