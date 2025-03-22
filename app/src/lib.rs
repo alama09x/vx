@@ -4,9 +4,9 @@ use data::MoveDirection;
 use gfx::state::VxState;
 use winit::{
     application::ApplicationHandler,
-    dpi::{LogicalPosition, LogicalSize},
+    dpi::{LogicalPosition, LogicalSize, PhysicalPosition},
     error::ExternalError,
-    event::{DeviceEvent, ElementState, WindowEvent},
+    event::{DeviceEvent, ElementState, MouseScrollDelta, WindowEvent},
     event_loop::ActiveEventLoop,
     keyboard::{KeyCode, PhysicalKey},
     window::CursorGrabMode,
@@ -102,16 +102,25 @@ impl ApplicationHandler for VxApplication {
         _device_id: winit::event::DeviceId,
         event: winit::event::DeviceEvent,
     ) {
-        if let DeviceEvent::MouseMotion { delta } = event {
-            if self.suppress_next_mouse_delta {
-                self.suppress_next_mouse_delta = false;
-                return;
+        match event {
+            DeviceEvent::MouseMotion { delta } => {
+                if self.suppress_next_mouse_delta {
+                    self.suppress_next_mouse_delta = false;
+                    return;
+                }
+                if let Some(ref mut state) = self.state {
+                    let (dx, dy) = delta;
+                    state.camera.rotate_by_mouse_movement(dx as f32, dy as f32);
+                }
             }
-
-            if let Some(ref mut state) = self.state {
-                let (dx, dy) = delta;
-                state.camera.rotate_by_mouse_movement(dx as f32, dy as f32);
+            DeviceEvent::MouseWheel {
+                delta: MouseScrollDelta::PixelDelta(PhysicalPosition { x: _, y }),
+            } => {
+                if let Some(ref mut state) = self.state {
+                    state.camera.zoom(y as f32);
+                }
             }
+            _ => (),
         }
     }
 
