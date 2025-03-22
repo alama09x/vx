@@ -6,4 +6,5 @@ edition = "2021"
 [dependencies]
 winit = "0.30.9"
 gfx = { path = "../gfx" }
+data = { path = "../data" }
 ash = "0.38.0"

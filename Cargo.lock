@@ -63,6 +63,7 @@ name = "app"
 version = "0.1.0"
 dependencies = [
  "ash",
+ "data",
  "gfx",
  "winit",
 ]
@@ -155,6 +156,20 @@ name = "bytemuck"
 version = "1.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6b1fc10dbac614ebc03540c9dbd60e83887fda27794998c6528f1782047d540"
+dependencies = [
+ "bytemuck_derive",
+]
+
+[[package]]
+name = "bytemuck_derive"
+version = "1.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3fa76293b4f7bb636ab88fd78228235b5248b4d05cc589aed610f954af5d7c7a"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "bytes"
@@ -321,6 +336,10 @@ checksum = "96a6ac251f4a2aca6b3f91340350eab87ae57c3f127ffeb585e92bd336717991"
 [[package]]
 name = "data"
 version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "glam",
+]
 
 [[package]]
 name = "dispatch"
@@ -428,6 +447,7 @@ dependencies = [
  "ash",
  "ash-window",
  "bytemuck",
+ "data",
  "glam",
  "winit",
 ]
