@@ -11,7 +11,6 @@ use std::{
     os::raw,
     path::Path,
     ptr, slice, str,
-    time::Instant,
 };
 
 use ash::{
@@ -20,19 +19,12 @@ use ash::{
     prelude::VkResult,
     vk,
 };
-use data::{camera::CameraGpu, transform::Transform, IntoBytes};
-use winit::{
-    dpi::LogicalSize,
-    event_loop::ActiveEventLoop,
-    raw_window_handle::{HasDisplayHandle, HasWindowHandle},
-    window::{Window, WindowAttributes},
-};
+use data::{camera::CameraGpu, IntoBytes};
 
-use data::camera::Camera;
+use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 #[allow(dead_code)]
 pub struct VxState {
-    pub window: Window,
     entry: ash::Entry,
     instance: ash::Instance,
     debug_utils_loader: debug_utils::Instance,
@@ -65,7 +57,7 @@ pub struct VxState {
 
     uniform_buffers: Vec<vk::Buffer>,
     uniform_buffers_memory: Vec<vk::DeviceMemory>,
-    uniform_buffers_mapped: Vec<*mut c_void>,
+    uniform_buffers_mapped: Vec<&'static mut [u8]>,
 
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: Vec<vk::DescriptorSet>,
@@ -74,15 +66,10 @@ pub struct VxState {
     sync_objects: SyncObjects,
 
     current_frame: u8,
-
-    start_time: Instant,
-    current_time: Instant,
-    previous_time: Instant,
-    elapsed_time: f32,
-    pub delta_time: f32,
-
-    pub camera: Camera,
 }
+
+unsafe impl Send for VxState {}
+unsafe impl Sync for VxState {}
 
 const MAX_FRAMES_IN_FLIGHT: u8 = 2;
 
@@ -122,20 +109,20 @@ impl VxState {
     pub fn new(
         app_name: &'static str,
         app_version: u32,
-        window_title: &str,
-        window_size: &LogicalSize<f32>,
-        event_loop: &ActiveEventLoop,
+        window_width: f32,
+        window_height: f32,
+        display_handle: RawDisplayHandle,
+        window_handle: RawWindowHandle,
     ) -> Result<Self, Box<dyn Error>> {
         unsafe {
-            let window = Self::create_window(window_title, window_size, event_loop)?;
             let entry = ash::Entry::load()?;
-            let instance = Self::create_instance(&entry, app_name, app_version, event_loop)?;
+            let instance = Self::create_instance(&entry, app_name, app_version, display_handle)?;
 
             let debug_utils_loader = debug_utils::Instance::new(&entry, &instance);
             let debug_messenger = Self::create_debug_messenger(&debug_utils_loader)?;
 
             let surface_loader = surface::Instance::new(&entry, &instance);
-            let surface = Self::create_surface(&entry, &instance, &window)?;
+            let surface = Self::create_surface(&entry, &instance, display_handle, window_handle)?;
 
             let (physical_device, queue_family_indices) =
                 Self::pick_physical_device(&instance, &surface_loader, surface)?;
@@ -151,7 +138,8 @@ impl VxState {
                     &surface_loader,
                     surface,
                     &swapchain_loader,
-                    &window,
+                    window_width,
+                    window_height,
                     &queue_family_indices,
                 )?;
 
@@ -210,16 +198,7 @@ impl VxState {
 
             let sync_objects = SyncObjects::new(&device)?;
 
-            let current_time = Instant::now();
-
-            let camera = Camera::new(
-                Transform::from_xyz(0.0, 0.0, 16.0),
-                window_size.width,
-                window_size.height,
-            );
-
             Ok(Self {
-                window,
                 entry,
                 instance,
                 debug_utils_loader,
@@ -263,44 +242,27 @@ impl VxState {
                 sync_objects,
 
                 current_frame: 0,
-
-                start_time: current_time,
-                current_time,
-                previous_time: current_time,
-                elapsed_time: 0.0,
-                delta_time: 0.0,
-
-                camera,
             })
         }
     }
 
-    fn update_time(&mut self) {
-        self.current_time = Instant::now();
-        self.elapsed_time = self
-            .current_time
-            .duration_since(self.start_time)
-            .as_secs_f32();
-        self.delta_time = self
-            .current_time
-            .duration_since(self.previous_time)
-            .as_secs_f32();
-        self.previous_time = self.current_time;
-    }
-
-    unsafe fn update_uniform_buffers(&mut self) -> VkResult<()> {
+    unsafe fn update_uniform_buffers(&mut self, camera_gpu: CameraGpu) -> VkResult<()> {
         ptr::copy_nonoverlapping(
-            self.camera.to_bytes().as_ptr() as *const c_void,
-            self.uniform_buffers_mapped[self.current_frame as usize],
-            mem::size_of::<CameraGpu>(),
+            camera_gpu.to_bytes().as_ptr(),
+            (*self.uniform_buffers_mapped[self.current_frame as usize]).as_mut_ptr(),
+            Self::UNIFORM_BUFFER_SIZE,
         );
-
         Ok(())
     }
 
-    pub fn draw_frame(&mut self) -> VkResult<()> {
+    pub fn draw_frame(
+        &mut self,
+        window_width: f32,
+        window_height: f32,
+        camera_gpu: CameraGpu,
+    ) -> VkResult<()> {
         unsafe {
-            self.update_time();
+            self.update_uniform_buffers(camera_gpu)?;
 
             self.device.wait_for_fences(
                 &[self.sync_objects.in_flight_fences[self.current_frame as usize]],
@@ -317,13 +279,11 @@ impl VxState {
                 Ok(i) => i,
                 Err(vk::Result::SUBOPTIMAL_KHR) => return Ok(()),
                 Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
-                    self.recreate_swapchain()?;
+                    self.recreate_swapchain(window_width, window_height)?;
                     return Ok(());
                 }
                 Err(e) => return Err(e),
             };
-
-            self.update_uniform_buffers()?;
 
             self.device
                 .reset_fences(&[self.sync_objects.in_flight_fences[self.current_frame as usize]])?;
@@ -361,7 +321,7 @@ impl VxState {
             ) {
                 Ok(_) => (),
                 Err(vk::Result::ERROR_OUT_OF_DATE_KHR) | Err(vk::Result::SUBOPTIMAL_KHR) => {
-                    self.recreate_swapchain()?;
+                    self.recreate_swapchain(window_width, window_height)?;
                 }
                 Err(e) => return Err(e),
             };
@@ -371,11 +331,10 @@ impl VxState {
         }
     }
 
-    pub fn recreate_swapchain(&mut self) -> VkResult<()> {
+    pub fn recreate_swapchain(&mut self, window_width: f32, window_height: f32) -> VkResult<()> {
         unsafe {
             self.device.device_wait_idle()?;
-            let physical_size = self.window.inner_size();
-            if physical_size.width == 0 || physical_size.height == 0 {
+            if window_width == 0.0 || window_height == 0.0 {
                 return Ok(());
             }
 
@@ -390,7 +349,8 @@ impl VxState {
                 &self.surface_loader,
                 self.surface,
                 &self.swapchain_loader,
-                &self.window,
+                window_width,
+                window_height,
                 &self.queue_family_indices,
             )?;
 
@@ -482,29 +442,14 @@ impl VxState {
         Ok(())
     }
 
-    fn create_window(
-        title: &str,
-        size: &LogicalSize<f32>,
-        event_loop: &ActiveEventLoop,
-    ) -> Result<Window, Box<dyn Error>> {
-        let window = event_loop.create_window(
-            WindowAttributes::default()
-                .with_title(title)
-                .with_inner_size(*size),
-        )?;
-        window.request_redraw();
-        Ok(window)
-    }
-
     unsafe fn create_instance(
         entry: &ash::Entry,
         app_name: &str,
         app_version: u32,
-        event_loop: &ActiveEventLoop,
+        display_handle: RawDisplayHandle,
     ) -> Result<ash::Instance, Box<dyn Error>> {
         let mut extension_names =
-            ash_window::enumerate_required_extensions(event_loop.display_handle()?.as_raw())?
-                .to_vec();
+            ash_window::enumerate_required_extensions(display_handle)?.to_vec();
         extension_names.push(debug_utils::NAME.as_ptr());
         #[cfg(any(target_os = "macos", target_os = "ios"))]
         {
@@ -563,16 +508,10 @@ impl VxState {
     unsafe fn create_surface(
         entry: &ash::Entry,
         instance: &ash::Instance,
-        window: &winit::window::Window,
-    ) -> Result<vk::SurfaceKHR, Box<dyn Error>> {
-        let surface = ash_window::create_surface(
-            entry,
-            instance,
-            window.display_handle()?.as_raw(),
-            window.window_handle()?.as_raw(),
-            None,
-        )?;
-        Ok(surface)
+        display_handle: RawDisplayHandle,
+        window_handle: RawWindowHandle,
+    ) -> VkResult<vk::SurfaceKHR> {
+        ash_window::create_surface(entry, instance, display_handle, window_handle, None)
     }
 
     unsafe fn pick_physical_device(
@@ -694,18 +633,18 @@ impl VxState {
 
     fn choose_swapchain_extent(
         capabilities: &vk::SurfaceCapabilitiesKHR,
-        window: &Window,
+        window_width: f32,
+        window_height: f32,
     ) -> vk::Extent2D {
         if capabilities.current_extent.width != u32::MAX {
             capabilities.current_extent
         } else {
-            let size = window.inner_size();
             vk::Extent2D {
-                width: size.width.clamp(
+                width: (window_width.round() as u32).clamp(
                     capabilities.min_image_extent.width,
                     capabilities.max_image_extent.width,
                 ),
-                height: size.height.clamp(
+                height: (window_height.round() as u32).clamp(
                     capabilities.min_image_extent.height,
                     capabilities.max_image_extent.height,
                 ),
@@ -718,7 +657,8 @@ impl VxState {
         surface_loader: &surface::Instance,
         surface: vk::SurfaceKHR,
         swapchain_loader: &swapchain::Device,
-        window: &Window,
+        window_width: f32,
+        window_height: f32,
         queue_familiy_indices: &QueueFamilyIndices,
     ) -> VkResult<(vk::SwapchainKHR, Vec<vk::Image>, vk::Format, vk::Extent2D)> {
         let SwapchainSupportDetails {
@@ -733,7 +673,7 @@ impl VxState {
         let present_mode =
             Self::choose_swapchain_present_mode(&present_modes).ok_or(vk::Result::ERROR_UNKNOWN)?;
 
-        let extent = Self::choose_swapchain_extent(&capabilities, window);
+        let extent = Self::choose_swapchain_extent(&capabilities, window_width, window_height);
 
         let mut image_count = capabilities.min_image_count + 1;
         if capabilities.min_image_count > 0 && image_count > capabilities.max_image_count {
@@ -1239,13 +1179,20 @@ impl VxState {
         )
     }
 
+    const UNIFORM_BUFFER_SIZE: usize = mem::size_of::<CameraGpu>();
+
+    #[allow(clippy::type_complexity)]
     unsafe fn create_uniform_buffers(
         instance: &ash::Instance,
         device: &ash::Device,
         physical_device: vk::PhysicalDevice,
         frames: u8,
-    ) -> VkResult<(Vec<vk::Buffer>, Vec<vk::DeviceMemory>, Vec<*mut c_void>)> {
-        let buffer_size = mem::size_of::<CameraGpu>() as u64;
+    ) -> VkResult<(
+        Vec<vk::Buffer>,
+        Vec<vk::DeviceMemory>,
+        Vec<&'static mut [u8]>,
+    )> {
+        let buffer_size = mem::size_of::<CameraGpu>();
 
         let mut buffers = Vec::with_capacity(frames as usize);
         let mut memory = Vec::with_capacity(frames as usize);
@@ -1256,11 +1203,14 @@ impl VxState {
                 instance,
                 device,
                 physical_device,
-                buffer_size,
+                buffer_size as u64,
                 vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | { vk::MemoryPropertyFlags::HOST_COHERENT },
             )?;
-            let map = device.map_memory(mem, 0, buffer_size, vk::MemoryMapFlags::empty())?;
+            let map_ptr =
+                device.map_memory(mem, 0, buffer_size as u64, vk::MemoryMapFlags::empty())?
+                    as *mut u8;
+            let map = slice::from_raw_parts_mut(map_ptr, buffer_size);
 
             buffers.push(buffer);
             memory.push(mem);

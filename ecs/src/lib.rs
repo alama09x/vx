@@ -4,16 +4,15 @@ use std::{
     any::{Any, TypeId},
     fmt::{self, Debug, Formatter},
     hash::Hash,
+    ops::Deref,
+    sync::{Arc, Mutex},
 };
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Entity(pub u32);
 
 #[derive(Debug, Default)]
 pub struct World {
-    entities: HashMap<Entity, HashMap<ComponentId, Box<dyn Component>>>,
-    systems: HashMap<Schedule, HashMap<SystemId, System>>,
-    resources: HashMap<ResourceId, Resource>,
+    entities: HashMap<EntityId, HashMap<TypeId, Box<dyn Component>>>,
+    systems: HashMap<Schedule, HashMap<TypeId, Arc<Mutex<System>>>>,
+    resources: HashMap<TypeId, Box<dyn Any>>,
     entity_id_generator: IdGenerator,
 }
 
@@ -22,46 +21,99 @@ impl World {
         Self::default()
     }
 
+    pub fn run_schedule(&mut self, schedule: Schedule) {
+        if let Some(systems) = self.systems.get(&schedule) {
+            let systems: Vec<_> = systems.values().cloned().collect();
+            for system in systems {
+                let mut system = system.lock().unwrap();
+                system.call(self);
+            }
+        }
+    }
+
     pub fn spawn(&mut self, components: Vec<Box<dyn Component>>) {
         self.entities.insert(
-            Entity(self.entity_id_generator.generate()),
+            EntityId(self.entity_id_generator.generate()),
             components
                 .into_iter()
-                .map(|c| (ComponentId((*c).type_id()), c))
+                .map(|c| ((*c).type_id(), c))
                 .collect(),
         );
     }
 
-    pub fn insert_resource<R: 'static + ResourceTrait>(&mut self, resource: R) {
-        self.resources
-            .insert(ResourceId(resource.type_id()), Resource(Box::new(resource)));
+    pub fn insert_resource<R: 'static + Resource>(&mut self, resource: R) {
+        self.resources.insert(
+            TypeId::of::<R>(),
+            Box::new(Arc::new(Mutex::new(Box::new(resource)))),
+        );
     }
 
     pub fn insert_systems(&mut self, schedule: Schedule, systems: Vec<System>) {
         let systems = systems
             .into_iter()
-            .map(|sys| (SystemId(sys.type_id()), sys))
+            .map(|sys| (sys.type_id(), Arc::new(Mutex::new(sys))))
             .collect();
         self.systems.insert(schedule, systems);
     }
-}
 
-pub struct EntityCommands {
-    entity: Entity,
-    world: &'static mut World,
-}
+    pub fn get_entity_commands(&mut self, entity: EntityId) -> Option<EntityCommands> {
+        if self.entities.contains_key(&entity) {
+            Some(EntityCommands {
+                entity,
+                world: self,
+            })
+        } else {
+            None
+        }
+    }
 
-impl EntityCommands {
-    pub fn insert(&mut self, components: Vec<Box<dyn Component>>) {
-        self.world.entities.get_mut(&self.entity).unwrap().extend(
-            components
-                .into_iter()
-                .map(|c| (ComponentId((*c).type_id()), c)),
-        );
+    pub fn get<P: SystemParam>(&self) -> Option<P> {
+        P::get_from_world(self)
     }
 }
 
-pub trait Component: Debug + Send + Sync {}
+pub struct EntityCommands<'w> {
+    entity: EntityId,
+    world: &'w mut World,
+}
+
+impl EntityCommands<'_> {
+    pub fn insert(&mut self, components: Vec<Box<dyn Component>>) {
+        self.world
+            .entities
+            .get_mut(&self.entity)
+            .unwrap()
+            .extend(components.into_iter().map(|c| ((*c).type_id(), c)));
+    }
+
+    pub fn get<C: Component + 'static>(&self) -> Option<&C> {
+        self.world
+            .entities
+            .get(&self.entity)?
+            .get(&TypeId::of::<C>())?
+            .as_any()
+            .downcast_ref::<C>()
+    }
+
+    pub fn remove(&mut self) {
+        self.world.entities.remove(&self.entity);
+    }
+}
+
+pub trait Component: Debug + Send + Sync {
+    fn as_any(&self) -> &dyn Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+
+impl<T: Debug + Send + Sync + 'static> Component for T {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
 
 impl PartialEq for dyn Component {
     fn eq(&self, other: &Self) -> bool {
@@ -72,10 +124,7 @@ impl PartialEq for dyn Component {
 impl Eq for dyn Component {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SystemId(TypeId);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ComponentId(TypeId);
+pub struct EntityId(u32);
 
 #[derive(Debug, Default)]
 pub struct IdGenerator {
@@ -102,35 +151,65 @@ impl IdGenerator {
     }
 }
 
-impl SystemId {}
+pub struct System(pub Box<dyn FnMut(&mut World)>);
 
-type SystemParams = Vec<Box<dyn SystemParam>>;
-pub struct System {
-    params: SystemParams,
-    callback: Box<dyn FnMut(&mut SystemParams)>,
-}
+unsafe impl Send for System {}
+unsafe impl Sync for System {}
 
 impl System {
-    pub fn call(&mut self) {
-        (self.callback)(&mut self.params);
+    pub fn call(&mut self, world: &mut World) {
+        (self.0)(world);
     }
 }
 
 impl Debug for System {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "System with params {:?}", self.params)
+        write!(f, "System")
     }
 }
 
-pub trait SystemParam: Debug {}
+pub trait SystemParam: Debug {
+    fn get_from_world(world: &World) -> Option<Self>
+    where
+        Self: Sized;
+}
 
-#[derive(Debug)]
-pub struct Resource(pub Box<dyn ResourceTrait>);
+#[derive(Debug, Clone)]
+pub struct Res<R: Resource>(Arc<R>);
 
-pub trait ResourceTrait: Debug + Send + Sync {}
+impl<R: Resource> Deref for Res<R> {
+    type Target = R;
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref()
+    }
+}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ResourceId(TypeId);
+#[derive(Debug, Clone)]
+pub struct ResMut<R: Resource>(pub Arc<Mutex<R>>);
+
+pub trait Resource: Debug + Send + Sync {}
+
+impl<R: Resource + 'static> SystemParam for Res<R> {
+    fn get_from_world(world: &World) -> Option<Self> {
+        world
+            .resources
+            .get(&TypeId::of::<R>())?
+            .downcast_ref::<Arc<R>>()
+            .cloned()
+            .map(Res)
+    }
+}
+
+impl<R: Resource + 'static> SystemParam for ResMut<R> {
+    fn get_from_world(world: &World) -> Option<Self> {
+        world
+            .resources
+            .get(&TypeId::of::<R>())?
+            .downcast_ref::<Arc<Mutex<R>>>()
+            .cloned()
+            .map(ResMut)
+    }
+}
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub enum Schedule {
@@ -142,4 +221,31 @@ pub enum Schedule {
     PostUpdate,
     Cleanup,
     Exit,
+}
+
+#[allow(dead_code)]
+mod tests {
+    use super::*;
+    #[test]
+    fn basic_ecs_test() {
+        let mut world = World::new();
+        world.insert_systems(Schedule::Startup, vec![System(Box::new(system))]);
+        world.insert_resource(Person { name: "Anthony" });
+        world.run_schedule(Schedule::Startup);
+    }
+
+    fn system(world: &mut World) {
+        if let Some(person) = world.get::<Res<Person>>() {
+            println!("person: {:?}", person);
+        } else {
+            println!("Person not found!");
+        }
+    }
+
+    #[derive(Debug)]
+    struct Person {
+        name: &'static str,
+    }
+
+    impl Resource for Person {}
 }

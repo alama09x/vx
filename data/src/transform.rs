@@ -1,9 +1,10 @@
+use bevy_ecs::component::Component;
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Quat, Vec3};
 
 use crate::IntoBytes;
 
-#[derive(Clone, Copy)]
+#[derive(Component, Clone, Copy)]
 pub struct Transform {
     pub translation: Vec3,
     pub rotation: Quat,
@@ -61,12 +62,16 @@ impl Transform {
     }
 }
 
-impl IntoBytes for Transform {
-    fn to_bytes(&self) -> Vec<u8> {
-        let gpu_data = TransformGpu {
-            model: self.to_mat4().to_cols_array_2d(),
-        };
+impl TransformGpu {
+    pub fn new(transform: &Transform) -> Self {
+        Self {
+            model: transform.to_mat4().to_cols_array_2d(),
+        }
+    }
+}
 
-        bytemuck::cast_slice(&[gpu_data]).to_vec()
+impl IntoBytes for TransformGpu {
+    fn to_bytes(&self) -> Vec<u8> {
+        bytemuck::cast_slice(&[*self]).to_vec()
     }
 }

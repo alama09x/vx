@@ -4,5 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+bevy_ecs = "0.15.3"
 bytemuck = { version = "1.22.0", features = ["derive"] }
 glam = "0.30.1"

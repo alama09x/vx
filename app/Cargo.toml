@@ -8,3 +8,11 @@ winit = "0.30.9"
 renderer = { path = "../renderer" }
 data = { path = "../data" }
 ash = "0.38.0"
+bevy_ecs = "0.15.3"
+bevy_app = "0.15.3"
+bevy_window = "0.15.3"
+raw-window-handle = "0.6.2"
+bevy_winit = "0.15.3"
+bevy_a11y = "0.15.3"
+bevy_input = "0.15.3"
+glam = "0.30.1"
