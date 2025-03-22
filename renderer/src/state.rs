@@ -20,7 +20,7 @@ use ash::{
     prelude::VkResult,
     vk,
 };
-use data::{camera::CameraRaw, transform::Transform, DynIntoRaw};
+use data::{camera::CameraGpu, transform::Transform, IntoBytes};
 use winit::{
     dpi::LogicalSize,
     event_loop::ActiveEventLoop,
@@ -292,7 +292,7 @@ impl VxState {
         ptr::copy_nonoverlapping(
             self.camera.to_bytes().as_ptr() as *const c_void,
             self.uniform_buffers_mapped[self.current_frame as usize],
-            mem::size_of::<CameraRaw>(),
+            mem::size_of::<CameraGpu>(),
         );
 
         Ok(())
@@ -1245,7 +1245,7 @@ impl VxState {
         physical_device: vk::PhysicalDevice,
         frames: u8,
     ) -> VkResult<(Vec<vk::Buffer>, Vec<vk::DeviceMemory>, Vec<*mut c_void>)> {
-        let buffer_size = mem::size_of::<CameraRaw>() as u64;
+        let buffer_size = mem::size_of::<CameraGpu>() as u64;
 
         let mut buffers = Vec::with_capacity(frames as usize);
         let mut memory = Vec::with_capacity(frames as usize);
@@ -1305,7 +1305,7 @@ impl VxState {
                     .buffer_info(&[vk::DescriptorBufferInfo::default()
                         .buffer(uniform_buffers[frame])
                         .offset(0)
-                        .range(mem::size_of::<CameraRaw>() as u64)])],
+                        .range(mem::size_of::<CameraGpu>() as u64)])],
                 &[],
             );
         }

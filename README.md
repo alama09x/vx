@@ -9,7 +9,7 @@ Goals:
 - Easy & fast to use
 - Generic & modular
 
-## Graphics API
+## Renderer API
 
 A high-level abstraction over Vulkan (`ash`)
 Goals:

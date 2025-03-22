@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Quat, Vec3};
 
-use crate::IntoRaw;
+use crate::IntoBytes;
 
 #[derive(Clone, Copy)]
 pub struct Transform {
@@ -12,7 +12,7 @@ pub struct Transform {
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-pub struct TransformRaw {
+pub struct TransformGpu {
     model: [[f32; 4]; 4],
 }
 
@@ -61,12 +61,12 @@ impl Transform {
     }
 }
 
-impl IntoRaw for Transform {
-    type Raw = TransformRaw;
-
-    fn to_raw(&self) -> Self::Raw {
-        Self::Raw {
+impl IntoBytes for Transform {
+    fn to_bytes(&self) -> Vec<u8> {
+        let gpu_data = TransformGpu {
             model: self.to_mat4().to_cols_array_2d(),
-        }
+        };
+
+        bytemuck::cast_slice(&[gpu_data]).to_vec()
     }
 }

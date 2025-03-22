@@ -1,9 +1,9 @@
-use std::{f32, ops::RangeInclusive};
+use std::f32;
 
 use bytemuck::{Pod, Zeroable};
 use glam::{EulerRot, Mat4, Quat, Vec3};
 
-use crate::{transform::Transform, IntoRaw, MoveDirection};
+use crate::{transform::Transform, Direction, IntoBytes};
 
 #[derive(Clone, Copy)]
 pub struct Camera {
@@ -15,11 +15,22 @@ pub struct Camera {
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-pub struct CameraRaw {
+pub struct CameraGpu {
     pub view_projection: [[f32; 4]; 4],
 }
 
 impl Camera {
+    const MOVE_SPEED: f32 = 3.0;
+
+    const YAW_SPEED: f32 = 0.004;
+    const PITCH_SPEED: f32 = 0.004;
+
+    const PITCH_LIMIT: f32 = f32::consts::FRAC_PI_2 - 0.01;
+
+    const SCROLL_SPEED: f32 = 3.0;
+    const FOV_LIMIT_MIN: f32 = 1.0;
+    const FOV_LIMIT_MAX: f32 = 179.0;
+
     pub fn new(transform: Transform, window_width: f32, window_height: f32) -> Self {
         Self {
             transform,
@@ -29,21 +40,12 @@ impl Camera {
         }
     }
 
-    const FOV_LIMIT_MIN: RangeInclusive<f32> = 1.0..=179.0;
-
-    const SCROLL_SPEED: f32 = 3.0;
-
     pub fn zoom(&mut self, scroll: f32) {
         let degrees = scroll * 0.1 * Self::SCROLL_SPEED;
-        if Self::FOV_LIMIT_MIN.contains(&(self.fov - degrees)) {
-            println!("degs: {degrees}");
-            self.fov -= degrees;
-        }
+        self.fov = (self.fov - degrees).clamp(Self::FOV_LIMIT_MIN, Self::FOV_LIMIT_MAX);
     }
 
-    const MOVE_SPEED: f32 = 3.0;
-
-    pub fn move_in_direction(&mut self, direction: MoveDirection, delta_time: f32) {
+    pub fn move_in_direction(&mut self, direction: Direction, delta_time: f32) {
         let speed = Self::MOVE_SPEED * delta_time;
 
         let remove_y = Vec3::X + Vec3::Z;
@@ -51,18 +53,14 @@ impl Camera {
         let local_z = (self.transform.rotation * Vec3::Z * remove_y).normalize() * speed;
 
         match direction {
-            MoveDirection::Forward => self.transform.translation -= local_z,
-            MoveDirection::Back => self.transform.translation += local_z,
-            MoveDirection::Left => self.transform.translation -= local_x,
-            MoveDirection::Right => self.transform.translation += local_x,
-            MoveDirection::Up => self.transform.translation.y -= speed,
-            MoveDirection::Down => self.transform.translation.y += speed,
+            Direction::Forward => self.transform.translation -= local_z,
+            Direction::Back => self.transform.translation += local_z,
+            Direction::Left => self.transform.translation -= local_x,
+            Direction::Right => self.transform.translation += local_x,
+            Direction::Up => self.transform.translation.y -= speed,
+            Direction::Down => self.transform.translation.y += speed,
         }
     }
-
-    const YAW_SPEED: f32 = 0.004;
-    const PITCH_SPEED: f32 = 0.004;
-    const PITCH_LIMIT: f32 = f32::consts::FRAC_PI_2 - 0.01;
 
     pub fn rotate_by_mouse_movement(&mut self, dx: f32, dy: f32) {
         let dyaw = dx * Self::YAW_SPEED;
@@ -76,10 +74,8 @@ impl Camera {
     }
 }
 
-impl IntoRaw for Camera {
-    type Raw = CameraRaw;
-
-    fn to_raw(&self) -> Self::Raw {
+impl IntoBytes for Camera {
+    fn to_bytes(&self) -> Vec<u8> {
         let view = self.transform.to_mat4().inverse();
 
         let projection = Mat4::perspective_rh(
@@ -89,8 +85,10 @@ impl IntoRaw for Camera {
             100.0,
         );
 
-        Self::Raw {
+        let gpu_data = CameraGpu {
             view_projection: (projection * view).to_cols_array_2d(),
-        }
+        };
+
+        bytemuck::cast_slice(&[gpu_data]).to_vec()
     }
 }

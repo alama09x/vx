@@ -1,7 +1,6 @@
-use std::collections::HashSet;
+use data::Direction;
+use renderer::state::VxState;
 
-use data::MoveDirection;
-use gfx::state::VxState;
 use winit::{
     application::ApplicationHandler,
     dpi::{LogicalPosition, LogicalSize, PhysicalPosition},
@@ -11,6 +10,8 @@ use winit::{
     keyboard::{KeyCode, PhysicalKey},
     window::CursorGrabMode,
 };
+
+use std::collections::HashSet;
 
 pub struct VxApplication {
     app_name: &'static str,
@@ -68,14 +69,14 @@ impl VxApplication {
         Ok(())
     }
 
-    fn direction_from_key(key: KeyCode) -> Option<MoveDirection> {
+    fn direction_from_key(key: KeyCode) -> Option<Direction> {
         match key {
-            KeyCode::KeyW => Some(MoveDirection::Forward),
-            KeyCode::KeyA => Some(MoveDirection::Left),
-            KeyCode::KeyS => Some(MoveDirection::Back),
-            KeyCode::KeyD => Some(MoveDirection::Right),
-            KeyCode::Space => Some(MoveDirection::Up),
-            KeyCode::ShiftLeft => Some(MoveDirection::Down),
+            KeyCode::KeyW => Some(Direction::Forward),
+            KeyCode::KeyA => Some(Direction::Left),
+            KeyCode::KeyS => Some(Direction::Back),
+            KeyCode::KeyD => Some(Direction::Right),
+            KeyCode::Space => Some(Direction::Up),
+            KeyCode::ShiftLeft => Some(Direction::Down),
             _ => None,
         }
     }
