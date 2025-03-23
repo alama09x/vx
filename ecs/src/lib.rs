@@ -1,3 +1,6 @@
+// Inspired by Bevy's ECS (MIT/Apache-2.0)
+// Though this is a very naive first attempt
+
 use ahash::{HashMap, HashSet};
 
 use std::{

@@ -1,3 +1,5 @@
+// Inspired by Bevy's Transform implementation (MIT/Apache-2.0)
+
 use std::slice;
 
 use bevy_ecs::component::Component;

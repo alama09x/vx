@@ -1,3 +1,5 @@
+// Heavily inspired by Bevy's Mesh implementation (MIT/Apache-2.0)
+
 use std::collections::BTreeMap;
 
 use ash::vk;
