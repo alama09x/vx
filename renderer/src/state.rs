@@ -260,7 +260,7 @@ impl VxState {
                 &device,
                 physical_device,
                 command_pool,
-                queues.graphics,
+                queues.transfer,
             )?;
 
             let (index_buffer, index_buffer_memory) = Self::create_index_buffer(
@@ -268,7 +268,7 @@ impl VxState {
                 &device,
                 physical_device,
                 command_pool,
-                queues.graphics,
+                queues.transfer,
             )?;
 
             let (uniform_buffers, uniform_buffers_memory, uniform_buffers_mapped) =
@@ -702,6 +702,7 @@ impl VxState {
         )?;
         let queues = Queues {
             graphics: device.get_device_queue(queue_family_indices.graphics_family, 0),
+            transfer: device.get_device_queue(queue_family_indices.present_family, 0),
             present: device.get_device_queue(queue_family_indices.present_family, 0),
         };
         Ok((device, queues))
@@ -1183,7 +1184,7 @@ impl VxState {
         device: &ash::Device,
         physical_device: vk::PhysicalDevice,
         command_pool: vk::CommandPool,
-        graphics_queue: vk::Queue,
+        transfer_queue: vk::Queue,
         data: &[T],
         buffer_usage: vk::BufferUsageFlags,
     ) -> VkResult<(vk::Buffer, vk::DeviceMemory)> {
@@ -1222,7 +1223,7 @@ impl VxState {
         Self::copy_buffer(
             device,
             command_pool,
-            graphics_queue,
+            transfer_queue,
             staging_buffer,
             buffer,
             buffer_size,
@@ -1239,14 +1240,14 @@ impl VxState {
         device: &ash::Device,
         physical_device: vk::PhysicalDevice,
         command_pool: vk::CommandPool,
-        graphics_queue: vk::Queue,
+        transfer_queue: vk::Queue,
     ) -> VkResult<(vk::Buffer, vk::DeviceMemory)> {
         Self::create_buffer_from_data_with_staging(
             instance,
             device,
             physical_device,
             command_pool,
-            graphics_queue,
+            transfer_queue,
             &Self::VERTICES,
             vk::BufferUsageFlags::VERTEX_BUFFER,
         )
@@ -1257,14 +1258,14 @@ impl VxState {
         device: &ash::Device,
         physical_device: vk::PhysicalDevice,
         command_pool: vk::CommandPool,
-        graphics_queue: vk::Queue,
+        transfer_queue: vk::Queue,
     ) -> VkResult<(vk::Buffer, vk::DeviceMemory)> {
         Self::create_buffer_from_data_with_staging(
             instance,
             device,
             physical_device,
             command_pool,
-            graphics_queue,
+            transfer_queue,
             &Self::INDICES,
             vk::BufferUsageFlags::INDEX_BUFFER,
         )
@@ -1436,16 +1437,22 @@ impl Vertex {
 struct QueueFamilyIndices {
     graphics_family: u32,
     present_family: u32,
+    transfer_family: u32,
 }
 
 impl QueueFamilyIndices {
-    pub const fn all(&self) -> [u32; 2] {
-        [self.graphics_family, self.present_family]
+    pub const fn all(&self) -> [u32; 3] {
+        [
+            self.graphics_family,
+            self.present_family,
+            self.transfer_family,
+        ]
     }
 }
 
 struct Queues {
     graphics: vk::Queue,
+    transfer: vk::Queue,
     present: vk::Queue,
 }
 
@@ -1499,6 +1506,18 @@ impl QueueFamilyIndices {
             })
             .ok_or(vk::Result::ERROR_UNKNOWN)?;
 
+        let transfer_family = queue_families
+            .iter()
+            .enumerate()
+            .find_map(|(index, properties)| {
+                if properties.queue_flags.contains(vk::QueueFlags::TRANSFER) {
+                    Some(index as u32)
+                } else {
+                    None
+                }
+            })
+            .ok_or(vk::Result::ERROR_UNKNOWN)?;
+
         let present_family = queue_families
             .iter()
             .enumerate()
@@ -1516,6 +1535,7 @@ impl QueueFamilyIndices {
 
         Ok(Self {
             graphics_family,
+            transfer_family,
             present_family,
         })
     }

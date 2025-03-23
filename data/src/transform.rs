@@ -1,3 +1,5 @@
+use std::slice;
+
 use bevy_ecs::component::Component;
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Quat, Vec3};
@@ -71,7 +73,7 @@ impl TransformGpu {
 }
 
 impl IntoBytes for TransformGpu {
-    fn to_bytes(&self) -> Vec<u8> {
-        bytemuck::cast_slice(&[*self]).to_vec()
+    fn to_bytes(&self) -> &[u8] {
+        bytemuck::cast_slice(slice::from_ref(self))
     }
 }

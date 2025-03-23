@@ -1,4 +1,4 @@
-use std::f32;
+use std::{f32, slice};
 
 use bevy_ecs::component::Component;
 use bytemuck::{Pod, Zeroable};
@@ -74,7 +74,7 @@ impl CameraGpu {
 }
 
 impl IntoBytes for CameraGpu {
-    fn to_bytes(&self) -> Vec<u8> {
-        bytemuck::cast_slice(&[*self]).to_vec()
+    fn to_bytes(&self) -> &[u8] {
+        bytemuck::cast_slice(slice::from_ref(self))
     }
 }

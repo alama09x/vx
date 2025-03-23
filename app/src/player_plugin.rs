@@ -57,14 +57,14 @@ fn setup(mut commands: Commands) {
     ));
 }
 
-const MOVE_SPEED: f32 = 3.0;
+const MOVE_SPEED: f32 = 5.0;
 
-const YAW_SPEED: f32 = 0.3;
-const PITCH_SPEED: f32 = 0.3;
+const YAW_SPEED: f32 = 0.5;
+const PITCH_SPEED: f32 = 0.5;
 
 const PITCH_LIMIT: f32 = f32::consts::FRAC_PI_2 - 0.01;
 
-const SCROLL_SPEED: f32 = 3.0;
+const SCROLL_SPEED: f32 = 10.0;
 
 pub fn move_player(
     time: Res<Time>,
