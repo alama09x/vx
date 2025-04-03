@@ -1,5 +1,8 @@
 pub mod camera;
+pub mod math;
 pub mod transform;
+pub mod voxel;
+pub mod voxel_block;
 
 pub trait IntoBytes {
     fn to_bytes(&self) -> &[u8];
