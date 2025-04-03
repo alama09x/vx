@@ -14,8 +14,11 @@ use std::{
 };
 
 use ash::{
-    ext::debug_utils,
-    khr::{surface, swapchain},
+    ext::{buffer_device_address, debug_utils},
+    khr::{
+        acceleration_structure, deferred_host_operations, get_physical_device_properties2,
+        ray_tracing_pipeline, surface, swapchain,
+    },
     prelude::VkResult,
     vk,
 };
@@ -164,6 +167,11 @@ impl InitState {
     const LAYER_NAMES: &[&CStr] = &[c"VK_LAYER_KHRONOS_validation"];
     const DEVICE_EXTENSION_NAMES: &[&CStr] = &[
         swapchain::NAME,
+        ray_tracing_pipeline::NAME,
+        acceleration_structure::NAME,
+        deferred_host_operations::NAME,
+        get_physical_device_properties2::NAME,
+        buffer_device_address::NAME,
         #[cfg(any(target_os = "macos", target_os = "ios"))]
         ash::khr::portability_subset::NAME,
     ];
@@ -171,8 +179,6 @@ impl InitState {
     pub fn new(
         app_name: &'static str,
         app_version: u32,
-        window_width: f32,
-        window_height: f32,
         display_handle: RawDisplayHandle,
         window_handle: RawWindowHandle,
     ) -> Result<Self, Box<dyn Error>> {
@@ -425,6 +431,10 @@ pub struct SwapchainRenderState {
 
     render_pass: vk::RenderPass,
     framebuffers: Vec<vk::Framebuffer>,
+
+    output_image: vk::Image,
+    output_image_memory: vk::DeviceMemory,
+    output_image_view: vk::ImageView,
 }
 
 impl SwapchainRenderState {
@@ -447,6 +457,16 @@ impl SwapchainRenderState {
             let framebuffers =
                 Self::create_framebuffers(&init_state.device, render_pass, &extent, &image_views)?;
 
+            let (output_image, output_image_memory) = Self::create_output_image(
+                &init_state.instance,
+                &init_state.device,
+                init_state.physical_device,
+                extent,
+            )?;
+
+            let output_image_view =
+                Self::create_image_view(&init_state.device, output_image, image_format)?;
+
             Ok(Self {
                 loader,
                 image_format,
@@ -458,6 +478,10 @@ impl SwapchainRenderState {
 
                 render_pass,
                 framebuffers,
+
+                output_image,
+                output_image_memory,
+                output_image_view,
             })
         }
     }
@@ -491,6 +515,15 @@ impl SwapchainRenderState {
                 &self.extent,
                 &self.image_views,
             )?;
+
+            (self.output_image, self.output_image_memory) = Self::create_output_image(
+                &init_state.instance,
+                &init_state.device,
+                init_state.physical_device,
+                self.extent,
+            )?;
+            self.output_image_view =
+                Self::create_image_view(&init_state.device, self.output_image, self.image_format)?;
 
             Ok(())
         }
@@ -626,6 +659,14 @@ impl SwapchainRenderState {
             init_state.device.destroy_framebuffer(framebuffer, None);
             init_state.device.destroy_image_view(image_view, None);
         }
+        init_state
+            .device
+            .destroy_image_view(self.output_image_view, None);
+        init_state.device.destroy_image(self.output_image, None);
+        init_state
+            .device
+            .free_memory(self.output_image_memory, None);
+
         self.loader.destroy_swapchain(self.swapchain, None);
     }
 
@@ -690,33 +731,94 @@ impl SwapchainRenderState {
             self.cleanup_swapchain(init_state);
         }
     }
+
+    fn create_output_image(
+        instance: &ash::Instance,
+        device: &ash::Device,
+        physical_device: vk::PhysicalDevice,
+        extent: vk::Extent2D,
+    ) -> VkResult<(vk::Image, vk::DeviceMemory)> {
+        unsafe {
+            let image = device.create_image(
+                &vk::ImageCreateInfo::default()
+                    .image_type(vk::ImageType::TYPE_2D)
+                    .format(vk::Format::R8G8B8A8_UNORM)
+                    .extent(vk::Extent3D {
+                        width: extent.width,
+                        height: extent.height,
+                        depth: 1,
+                    })
+                    .mip_levels(1)
+                    .array_layers(1)
+                    .samples(vk::SampleCountFlags::TYPE_1)
+                    .tiling(vk::ImageTiling::OPTIMAL)
+                    .usage(vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC),
+                None,
+            )?;
+
+            let memory_requirements = device.get_image_memory_requirements(image);
+            let (memory_type_index, _) = BuffersState::find_memory_type(
+                instance,
+                physical_device,
+                memory_requirements.memory_type_bits,
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            )?;
+
+            let memory = device.allocate_memory(
+                &vk::MemoryAllocateInfo::default()
+                    .allocation_size(memory_requirements.size)
+                    .memory_type_index(memory_type_index),
+                None,
+            )?;
+
+            device.bind_image_memory(image, memory, 0)?;
+            Ok((image, memory))
+        }
+    }
 }
 
 #[derive(Resource)]
 pub struct PipelineState {
+    ray_tracing_loader: ray_tracing_pipeline::Device,
+    buffer_device_address_loader: buffer_device_address::Device,
     descriptor_set_layout: vk::DescriptorSetLayout,
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
+    shader_binding_table: ShaderBindingTable,
 }
 
 impl PipelineState {
-    pub fn new(
-        init_state: &InitState,
-        swapchain_render_state: &SwapchainRenderState,
-    ) -> Result<Self, Box<dyn Error>> {
+    pub fn new(init_state: &InitState) -> Result<Self, Box<dyn Error>> {
         unsafe {
+            let ray_tracing_loader =
+                ray_tracing_pipeline::Device::new(&init_state.instance, &init_state.device);
+            let buffer_device_address_loader =
+                buffer_device_address::Device::new(&init_state.instance, &init_state.device);
+
             let descriptor_set_layout = Self::create_descriptor_set_layout(&init_state.device)?;
 
-            let (pipeline_layout, pipeline) = Self::create_graphics_pipeline(
+            let (pipeline_layout, pipeline) = Self::create_pipeline(
                 &init_state.device,
-                swapchain_render_state.render_pass,
+                &ray_tracing_loader,
                 descriptor_set_layout,
             )?;
 
+            let shader_binding_table = Self::create_shader_binding_table(
+                &init_state.instance,
+                &init_state.device,
+                init_state.physical_device,
+                &buffer_device_address_loader,
+                &ray_tracing_loader,
+                pipeline,
+            )?;
+
             Ok(Self {
+                ray_tracing_loader,
+                buffer_device_address_loader,
                 descriptor_set_layout,
                 pipeline_layout,
                 pipeline,
+                shader_binding_table,
             })
         }
     }
@@ -728,9 +830,19 @@ impl PipelineState {
             &vk::DescriptorSetLayoutCreateInfo::default().bindings(&[
                 vk::DescriptorSetLayoutBinding::default()
                     .binding(0)
+                    .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(1)
+                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(2)
                     .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                     .descriptor_count(1)
-                    .stage_flags(vk::ShaderStageFlags::VERTEX),
+                    .stage_flags(vk::ShaderStageFlags::RAYGEN_KHR),
             ]),
             None,
         )
@@ -770,95 +882,138 @@ impl PipelineState {
         device.create_shader_module(&vk::ShaderModuleCreateInfo::default().code(code), None)
     }
 
-    unsafe fn create_graphics_pipeline(
+    unsafe fn create_pipeline(
         device: &ash::Device,
-        render_pass: vk::RenderPass,
+        ray_tracing_loader: &ray_tracing_pipeline::Device,
         descriptor_set_layout: vk::DescriptorSetLayout,
     ) -> Result<(vk::PipelineLayout, vk::Pipeline), Box<dyn Error>> {
-        let vert_shader = Self::read_shader_code(Path::new("./bin/shader.vert.spv"))?;
-        let frag_shader = Self::read_shader_code(Path::new("./bin/shader.frag.spv"))?;
+        let raygen_shader = Self::read_shader_code(Path::new("./bin/raygen.rgen.spv"))?;
+        let miss_shader = Self::read_shader_code(Path::new("./bin/miss.rmiss.spv"))?;
+        let closest_hit_shader = Self::read_shader_code(Path::new("./bin/closesthit.rchit.spv"))?;
 
-        let vert_shader_module = Self::create_shader_module(device, &vert_shader)?;
-        let frag_shader_module = Self::create_shader_module(device, &frag_shader)?;
+        let raygen_module = Self::create_shader_module(device, &raygen_shader)?;
+        let miss_module = Self::create_shader_module(device, &miss_shader)?;
+        let closest_hit_module = Self::create_shader_module(device, &closest_hit_shader)?;
 
         let pipeline_layout = device.create_pipeline_layout(
             &vk::PipelineLayoutCreateInfo::default().set_layouts(&[descriptor_set_layout]),
             None,
         )?;
 
-        let pipelines = device
-            .create_graphics_pipelines(
+        let pipelines = ray_tracing_loader
+            .create_ray_tracing_pipelines(
+                vk::DeferredOperationKHR::null(),
                 vk::PipelineCache::null(),
-                &[vk::GraphicsPipelineCreateInfo::default()
+                &[vk::RayTracingPipelineCreateInfoKHR::default()
                     .stages(&[
                         vk::PipelineShaderStageCreateInfo::default()
-                            .stage(vk::ShaderStageFlags::VERTEX)
-                            .module(vert_shader_module)
+                            .stage(vk::ShaderStageFlags::RAYGEN_KHR)
+                            .module(raygen_module)
                             .name(c"main"),
                         vk::PipelineShaderStageCreateInfo::default()
-                            .stage(vk::ShaderStageFlags::FRAGMENT)
-                            .module(frag_shader_module)
+                            .stage(vk::ShaderStageFlags::MISS_KHR)
+                            .module(miss_module)
+                            .name(c"main"),
+                        vk::PipelineShaderStageCreateInfo::default()
+                            .stage(vk::ShaderStageFlags::CLOSEST_HIT_KHR)
+                            .module(closest_hit_module)
                             .name(c"main"),
                     ])
-                    .vertex_input_state(
-                        &vk::PipelineVertexInputStateCreateInfo::default()
-                            .vertex_binding_descriptions(slice::from_ref(
-                                &Vertex::BINDING_DESCRIPTION,
-                            ))
-                            .vertex_attribute_descriptions(&Vertex::ATTRIBUTE_DESCRIPTIONS),
-                    )
-                    .input_assembly_state(
-                        &vk::PipelineInputAssemblyStateCreateInfo::default()
-                            .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-                            .primitive_restart_enable(false),
-                    )
-                    .viewport_state(
-                        &vk::PipelineViewportStateCreateInfo::default()
-                            .viewport_count(1)
-                            .scissor_count(1),
-                    )
-                    .rasterization_state(
-                        &vk::PipelineRasterizationStateCreateInfo::default()
-                            .depth_clamp_enable(false)
-                            .rasterizer_discard_enable(false)
-                            .polygon_mode(vk::PolygonMode::FILL)
-                            .line_width(1.0)
-                            .cull_mode(vk::CullModeFlags::BACK)
-                            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-                            .depth_bias_enable(false),
-                    )
-                    .multisample_state(
-                        &vk::PipelineMultisampleStateCreateInfo::default()
-                            .sample_shading_enable(false)
-                            .rasterization_samples(vk::SampleCountFlags::TYPE_1),
-                    )
-                    .color_blend_state(
-                        &vk::PipelineColorBlendStateCreateInfo::default()
-                            .logic_op_enable(false)
-                            .logic_op(vk::LogicOp::COPY)
-                            .attachments(slice::from_ref(
-                                &vk::PipelineColorBlendAttachmentState::default()
-                                    .color_write_mask(vk::ColorComponentFlags::RGBA)
-                                    .blend_enable(false),
-                            ))
-                            .blend_constants([0.0, 0.0, 0.0, 0.0]),
-                    )
-                    .dynamic_state(
-                        &vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&[
-                            vk::DynamicState::VIEWPORT,
-                            vk::DynamicState::SCISSOR,
-                        ]),
-                    )
-                    .layout(pipeline_layout)
-                    .render_pass(render_pass)
-                    .subpass(0)],
+                    .groups(&[
+                        vk::RayTracingShaderGroupCreateInfoKHR::default()
+                            .ty(vk::RayTracingShaderGroupTypeKHR::GENERAL)
+                            .general_shader(0)
+                            .closest_hit_shader(vk::SHADER_UNUSED_KHR)
+                            .any_hit_shader(vk::SHADER_UNUSED_KHR)
+                            .intersection_shader(vk::SHADER_UNUSED_KHR),
+                        vk::RayTracingShaderGroupCreateInfoKHR::default()
+                            .ty(vk::RayTracingShaderGroupTypeKHR::GENERAL)
+                            .general_shader(1)
+                            .closest_hit_shader(vk::SHADER_UNUSED_KHR)
+                            .any_hit_shader(vk::SHADER_UNUSED_KHR)
+                            .intersection_shader(vk::SHADER_UNUSED_KHR),
+                        vk::RayTracingShaderGroupCreateInfoKHR::default()
+                            .ty(vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP)
+                            .general_shader(vk::SHADER_UNUSED_KHR)
+                            .closest_hit_shader(2)
+                            .any_hit_shader(vk::SHADER_UNUSED_KHR)
+                            .intersection_shader(vk::SHADER_UNUSED_KHR),
+                    ])
+                    .max_pipeline_ray_recursion_depth(1)
+                    .layout(pipeline_layout)],
                 None,
             )
             .map_err(|_| vk::Result::ERROR_UNKNOWN)?;
 
-        device.destroy_shader_module(frag_shader_module, None);
-        device.destroy_shader_module(vert_shader_module, None);
+        device.destroy_shader_module(raygen_module, None);
+        device.destroy_shader_module(miss_module, None);
+        device.destroy_shader_module(closest_hit_module, None);
         Ok((pipeline_layout, pipelines[0]))
+    }
+
+    unsafe fn create_shader_binding_table(
+        instance: &ash::Instance,
+        device: &ash::Device,
+        physical_device: vk::PhysicalDevice,
+        bda_loader: &buffer_device_address::Device,
+        rt_loader: &ray_tracing_pipeline::Device,
+        pipeline: vk::Pipeline,
+    ) -> Result<ShaderBindingTable, Box<dyn Error>> {
+        let mut rt_properties = vk::PhysicalDeviceRayTracingPipelinePropertiesKHR::default();
+        instance.get_physical_device_properties2(
+            physical_device,
+            &mut vk::PhysicalDeviceProperties2::default().push_next(&mut rt_properties),
+        );
+
+        let handle_size = rt_properties.shader_group_handle_size as vk::DeviceSize;
+        let group_count = 3;
+        let total_size = handle_size * group_count;
+
+        let group_alignment = rt_properties.shader_group_handle_alignment as vk::DeviceSize;
+        let aligned_size = (total_size + group_alignment - 1) & !(group_alignment - 1);
+
+        let (buffer, memory) = BuffersState::create_buffer(
+            instance,
+            device,
+            physical_device,
+            aligned_size,
+            vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR | vk::BufferUsageFlags::TRANSFER_DST,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        )?;
+
+        let handles = rt_loader.get_ray_tracing_shader_group_handles(
+            pipeline,
+            0,
+            group_count as u32,
+            total_size as usize,
+        )?;
+
+        let mapped =
+            device.map_memory(memory, 0, aligned_size, vk::MemoryMapFlags::empty())? as *mut u8;
+        ptr::copy_nonoverlapping(handles.as_ptr(), mapped, handles.len());
+        device.unmap_memory(memory);
+
+        let buffer_address = bda_loader
+            .get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer));
+
+        let region_size = handle_size;
+
+        Ok(ShaderBindingTable {
+            buffer,
+            memory,
+            raygen_region: vk::StridedDeviceAddressRegionKHR::default()
+                .device_address(buffer_address)
+                .stride(region_size)
+                .size(region_size),
+            miss_region: vk::StridedDeviceAddressRegionKHR::default()
+                .device_address(buffer_address + region_size)
+                .stride(region_size)
+                .size(region_size),
+            hit_region: vk::StridedDeviceAddressRegionKHR::default()
+                .device_address(buffer_address + region_size * 2)
+                .stride(region_size)
+                .size(region_size),
+        })
     }
 
     pub fn cleanup(&self, init_state: &InitState) {
@@ -870,8 +1025,22 @@ impl PipelineState {
             init_state
                 .device
                 .destroy_descriptor_set_layout(self.descriptor_set_layout, None);
+            init_state
+                .device
+                .destroy_buffer(self.shader_binding_table.buffer, None);
+            init_state
+                .device
+                .free_memory(self.shader_binding_table.memory, None);
         }
     }
+}
+
+struct ShaderBindingTable {
+    buffer: vk::Buffer,
+    memory: vk::DeviceMemory,
+    raygen_region: vk::StridedDeviceAddressRegionKHR,
+    miss_region: vk::StridedDeviceAddressRegionKHR,
+    hit_region: vk::StridedDeviceAddressRegionKHR,
 }
 
 #[derive(Resource)]
@@ -1140,8 +1309,6 @@ impl BuffersState {
         )
     }
 
-    const UNIFORM_BUFFER_SIZE: usize = mem::size_of::<CameraGpu>();
-
     #[allow(clippy::type_complexity)]
     unsafe fn create_uniform_buffers(
         instance: &ash::Instance,
@@ -1210,7 +1377,13 @@ impl BuffersState {
 
 #[derive(Resource)]
 pub struct AccelerationStructureState {
-    acceleration_structure: Option<vk::AccelerationStructureKHR>,
+    acceleration_structure_loader: acceleration_structure::Device,
+    blas: vk::AccelerationStructureKHR,
+    blas_buffer: vk::Buffer,
+    blas_memory: vk::DeviceMemory,
+    tlas: vk::AccelerationStructureKHR,
+    tlas_buffer: vk::Buffer,
+    tlas_memory: vk::DeviceMemory,
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: Vec<vk::DescriptorSet>,
 }
@@ -1218,24 +1391,306 @@ pub struct AccelerationStructureState {
 impl AccelerationStructureState {
     pub fn new(
         init_state: &InitState,
+        swapchain_render_state: &SwapchainRenderState,
         pipeline_state: &PipelineState,
         buffers_state: &BuffersState,
     ) -> Result<Self, Box<dyn Error>> {
         unsafe {
+            let acceleration_structure_loader =
+                acceleration_structure::Device::new(&init_state.instance, &init_state.device);
+
+            let (blas, blas_buffer, blas_memory) = Self::create_blas(
+                &acceleration_structure_loader,
+                init_state,
+                pipeline_state,
+                buffers_state,
+            )?;
+            let (tlas, tlas_buffer, tlas_memory) = Self::create_tlas(
+                &acceleration_structure_loader,
+                init_state,
+                pipeline_state,
+                blas,
+            )?;
+
             let descriptor_pool = Self::create_descriptor_pool(&init_state.device)?;
             let descriptor_sets = Self::create_descriptor_sets(
                 &init_state.device,
                 descriptor_pool,
                 pipeline_state.descriptor_set_layout,
                 &buffers_state.uniform_buffers,
+                tlas,
+                &swapchain_render_state.output_image_view,
             )?;
 
             Ok(Self {
-                acceleration_structure: None,
+                acceleration_structure_loader,
+                blas,
+                blas_buffer,
+                blas_memory,
+                tlas,
+                tlas_buffer,
+                tlas_memory,
                 descriptor_pool,
                 descriptor_sets,
             })
         }
+    }
+
+    unsafe fn create_blas(
+        acceleration_structure_loader: &acceleration_structure::Device,
+        init_state: &InitState,
+        pipeline_state: &PipelineState,
+        buffers_state: &BuffersState,
+    ) -> Result<(vk::AccelerationStructureKHR, vk::Buffer, vk::DeviceMemory), Box<dyn Error>> {
+        let geometries = &[vk::AccelerationStructureGeometryKHR::default()
+            .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
+            .geometry(vk::AccelerationStructureGeometryDataKHR {
+                triangles: vk::AccelerationStructureGeometryTrianglesDataKHR::default()
+                    .vertex_format(vk::Format::R32G32B32_SFLOAT)
+                    .vertex_data(vk::DeviceOrHostAddressConstKHR {
+                        device_address: pipeline_state
+                            .buffer_device_address_loader
+                            .get_buffer_device_address(
+                                &vk::BufferDeviceAddressInfo::default()
+                                    .buffer(buffers_state.index_buffer),
+                            ),
+                    }),
+            })];
+
+        let mut build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
+            .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
+            .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
+            .geometries(geometries);
+
+        let mut size_info = vk::AccelerationStructureBuildSizesInfoKHR::default();
+        acceleration_structure_loader.get_acceleration_structure_build_sizes(
+            vk::AccelerationStructureBuildTypeKHR::HOST,
+            &build_info,
+            &[INDICES.len() as u32 / 3],
+            &mut size_info,
+        );
+
+        let (buffer, memory) = BuffersState::create_buffer(
+            &init_state.instance,
+            &init_state.device,
+            init_state.physical_device,
+            size_info.acceleration_structure_size,
+            vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        )?;
+
+        let acceleration_structure = acceleration_structure_loader.create_acceleration_structure(
+            &vk::AccelerationStructureCreateInfoKHR::default()
+                .buffer(buffer)
+                .size(size_info.acceleration_structure_size)
+                .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL),
+            None,
+        )?;
+
+        let (scratch_buffer, scratch_memory) = BuffersState::create_buffer(
+            &init_state.instance,
+            &init_state.device,
+            init_state.physical_device,
+            size_info.build_scratch_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        )?;
+        // TODO: create_buffer without memory map
+
+        let scratch_address = pipeline_state
+            .buffer_device_address_loader
+            .get_buffer_device_address(
+                &vk::BufferDeviceAddressInfo::default().buffer(scratch_buffer),
+            );
+
+        let command_buffer = init_state.device.allocate_command_buffers(
+            &vk::CommandBufferAllocateInfo::default()
+                .command_pool(init_state.command_pool)
+                .level(vk::CommandBufferLevel::PRIMARY)
+                .command_buffer_count(1),
+        )?[0];
+
+        init_state.device.begin_command_buffer(
+            command_buffer,
+            &vk::CommandBufferBeginInfo::default()
+                .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+        )?;
+
+        build_info = build_info
+            .dst_acceleration_structure(acceleration_structure)
+            .scratch_data(vk::DeviceOrHostAddressKHR {
+                device_address: scratch_address,
+            });
+
+        acceleration_structure_loader.cmd_build_acceleration_structures(
+            command_buffer,
+            &[build_info],
+            &[&[vk::AccelerationStructureBuildRangeInfoKHR::default()
+                .primitive_count(INDICES.len() as u32 / 3)]],
+        );
+
+        init_state.device.end_command_buffer(command_buffer)?;
+
+        init_state.device.queue_submit(
+            init_state.queues.graphics,
+            &[vk::SubmitInfo::default().command_buffers(&[command_buffer])],
+            vk::Fence::null(),
+        )?;
+
+        init_state
+            .device
+            .free_command_buffers(init_state.command_pool, &[command_buffer]);
+        init_state.device.destroy_buffer(scratch_buffer, None);
+        init_state.device.free_memory(scratch_memory, None);
+
+        Ok((acceleration_structure, buffer, memory))
+    }
+
+    unsafe fn create_tlas(
+        acceleration_structure_loader: &acceleration_structure::Device,
+        init_state: &InitState,
+        pipeline_state: &PipelineState,
+        blas: vk::AccelerationStructureKHR,
+    ) -> Result<(vk::AccelerationStructureKHR, vk::Buffer, vk::DeviceMemory), Box<dyn Error>> {
+        let instance = vk::AccelerationStructureInstanceKHR {
+            acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
+                device_handle: acceleration_structure_loader
+                    .get_acceleration_structure_device_address(
+                        &vk::AccelerationStructureDeviceAddressInfoKHR::default()
+                            .acceleration_structure(blas),
+                    ),
+            },
+            transform: vk::TransformMatrixKHR {
+                #[rustfmt::skip]
+                matrix: [
+                    1.0, 0.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0, 0.0,
+                    0.0, 0.0, 1.0, 0.0,
+                ],
+            },
+            instance_custom_index_and_mask: vk::Packed24_8::new(0, 0xFF),
+            instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
+                0,
+                vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8,
+            ),
+        };
+
+        let (instances_buffer, instances_memory) =
+            BuffersState::create_buffer_from_data_with_staging(
+                &init_state.instance,
+                &init_state.device,
+                init_state.physical_device,
+                init_state.command_pool,
+                init_state.queues.transfer,
+                &[instance],
+                vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
+            )?;
+
+        let geometries = [vk::AccelerationStructureGeometryKHR::default()
+            .geometry_type(vk::GeometryTypeKHR::INSTANCES)
+            .geometry(vk::AccelerationStructureGeometryDataKHR {
+                instances: vk::AccelerationStructureGeometryInstancesDataKHR::default().data(
+                    vk::DeviceOrHostAddressConstKHR {
+                        device_address: pipeline_state
+                            .buffer_device_address_loader
+                            .get_buffer_device_address(
+                                &vk::BufferDeviceAddressInfo::default().buffer(instances_buffer),
+                            ),
+                    },
+                ),
+            })];
+
+        let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
+            .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
+            .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
+            .geometries(&geometries);
+
+        let mut size_info = vk::AccelerationStructureBuildSizesInfoKHR::default();
+        acceleration_structure_loader.get_acceleration_structure_build_sizes(
+            vk::AccelerationStructureBuildTypeKHR::HOST,
+            &build_info,
+            &[1], // One instance (the cube BLAS)
+            &mut size_info,
+        );
+
+        let (tlas_buffer, tlas_memory) = BuffersState::create_buffer(
+            &init_state.instance,
+            &init_state.device,
+            init_state.physical_device,
+            size_info.acceleration_structure_size,
+            vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        )?;
+
+        let tlas = acceleration_structure_loader.create_acceleration_structure(
+            &vk::AccelerationStructureCreateInfoKHR::default()
+                .buffer(tlas_buffer)
+                .size(size_info.acceleration_structure_size)
+                .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL),
+            None,
+        )?;
+
+        let (scratch_buffer, scratch_memory) = BuffersState::create_buffer(
+            &init_state.instance,
+            &init_state.device,
+            init_state.physical_device,
+            size_info.build_scratch_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        )?;
+        let scratch_address = pipeline_state
+            .buffer_device_address_loader
+            .get_buffer_device_address(
+                &vk::BufferDeviceAddressInfo::default().buffer(scratch_buffer),
+            );
+
+        let command_buffer = init_state.device.allocate_command_buffers(
+            &vk::CommandBufferAllocateInfo::default()
+                .command_pool(init_state.command_pool)
+                .level(vk::CommandBufferLevel::PRIMARY)
+                .command_buffer_count(1),
+        )?[0];
+
+        init_state.device.begin_command_buffer(
+            command_buffer,
+            &vk::CommandBufferBeginInfo::default()
+                .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+        )?;
+
+        let build_info =
+            build_info
+                .dst_acceleration_structure(tlas)
+                .scratch_data(vk::DeviceOrHostAddressKHR {
+                    device_address: scratch_address,
+                });
+
+        acceleration_structure_loader.cmd_build_acceleration_structures(
+            command_buffer,
+            &[build_info],
+            &[&[vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(1)]],
+        );
+
+        init_state.device.end_command_buffer(command_buffer)?;
+        init_state.device.queue_submit(
+            init_state.queues.graphics,
+            &[vk::SubmitInfo::default().command_buffers(&[command_buffer])],
+            vk::Fence::null(),
+        )?;
+        init_state
+            .device
+            .queue_wait_idle(init_state.queues.graphics)?;
+        init_state
+            .device
+            .free_command_buffers(init_state.command_pool, &[command_buffer]);
+
+        init_state.device.destroy_buffer(scratch_buffer, None);
+        init_state.device.free_memory(scratch_memory, None);
+        init_state.device.destroy_buffer(instances_buffer, None);
+        init_state.device.free_memory(instances_memory, None);
+
+        Ok((tlas, tlas_buffer, tlas_memory))
     }
 
     unsafe fn create_descriptor_pool(device: &ash::Device) -> VkResult<vk::DescriptorPool> {
@@ -1255,6 +1710,8 @@ impl AccelerationStructureState {
         descriptor_pool: vk::DescriptorPool,
         descriptor_set_layout: vk::DescriptorSetLayout,
         uniform_buffers: &[vk::Buffer],
+        tlas: vk::AccelerationStructureKHR,
+        output_image_view: &vk::ImageView,
     ) -> VkResult<Vec<vk::DescriptorSet>> {
         let descriptor_sets = device.allocate_descriptor_sets(
             &vk::DescriptorSetAllocateInfo::default()
@@ -1264,16 +1721,37 @@ impl AccelerationStructureState {
 
         for (frame, &descriptor_set) in descriptor_sets.iter().enumerate() {
             device.update_descriptor_sets(
-                &[vk::WriteDescriptorSet::default()
-                    .dst_set(descriptor_set)
-                    .dst_binding(0)
-                    .dst_array_element(0)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                    .descriptor_count(1)
-                    .buffer_info(&[vk::DescriptorBufferInfo::default()
-                        .buffer(uniform_buffers[frame])
-                        .offset(0)
-                        .range(mem::size_of::<CameraGpu>() as u64)])],
+                &[
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(descriptor_set)
+                        .dst_binding(0)
+                        .dst_array_element(0)
+                        .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+                        .descriptor_count(1)
+                        .push_next(
+                            &mut vk::WriteDescriptorSetAccelerationStructureKHR::default()
+                                .acceleration_structures(&[tlas]),
+                        ),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(descriptor_set)
+                        .dst_binding(1)
+                        .dst_array_element(0)
+                        .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                        .descriptor_count(1)
+                        .image_info(&[vk::DescriptorImageInfo::default()
+                            .image_view(*output_image_view)
+                            .image_layout(vk::ImageLayout::GENERAL)]),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(descriptor_set)
+                        .dst_binding(0)
+                        .dst_array_element(0)
+                        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                        .descriptor_count(1)
+                        .buffer_info(&[vk::DescriptorBufferInfo::default()
+                            .buffer(uniform_buffers[frame])
+                            .offset(0)
+                            .range(mem::size_of::<CameraGpu>() as u64)]),
+                ],
                 &[],
             );
         }
@@ -1361,9 +1839,9 @@ impl CommandSyncState {
             )?;
             self.record_command_buffer(
                 init_state,
-                &swapchain_render_state,
+                swapchain_render_state,
                 pipeline_state,
-                &buffers_state,
+                buffers_state,
                 acceleration_structure_state,
                 self.command_buffers[self.current_frame as usize],
                 image_index,
@@ -1430,18 +1908,41 @@ impl CommandSyncState {
             .device
             .begin_command_buffer(command_buffer, &vk::CommandBufferBeginInfo::default())?;
 
-        init_state.device.cmd_begin_render_pass(
+        // init_state.device.cmd_begin_render_pass(
+        //     command_buffer,
+        //     &vk::RenderPassBeginInfo::default()
+        //         .render_pass(swapchain_render_state.render_pass)
+        //         .framebuffer(swapchain_render_state.framebuffers[image_index as usize])
+        //         .render_area(vk::Rect2D::default().extent(swapchain_render_state.extent))
+        //         .clear_values(&[vk::ClearValue {
+        //             color: vk::ClearColorValue {
+        //                 float32: [0.0, 0.0, 0.0, 1.0],
+        //             },
+        //         }]),
+        //     vk::SubpassContents::INLINE,
+        // );
+
+        init_state.device.cmd_pipeline_barrier(
             command_buffer,
-            &vk::RenderPassBeginInfo::default()
-                .render_pass(swapchain_render_state.render_pass)
-                .framebuffer(swapchain_render_state.framebuffers[image_index as usize])
-                .render_area(vk::Rect2D::default().extent(swapchain_render_state.extent))
-                .clear_values(&[vk::ClearValue {
-                    color: vk::ClearColorValue {
-                        float32: [0.0, 0.0, 0.0, 1.0],
-                    },
-                }]),
-            vk::SubpassContents::INLINE,
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[vk::ImageMemoryBarrier::default()
+                .old_layout(vk::ImageLayout::UNDEFINED)
+                .new_layout(vk::ImageLayout::GENERAL)
+                .src_access_mask(vk::AccessFlags::NONE)
+                .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
+                .image(swapchain_render_state.images[image_index as usize])
+                .subresource_range(
+                    vk::ImageSubresourceRange::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .base_mip_level(0)
+                        .level_count(1)
+                        .base_array_layer(0)
+                        .layer_count(1),
+                )],
         );
 
         init_state.device.cmd_bind_pipeline(
@@ -1450,36 +1951,6 @@ impl CommandSyncState {
             pipeline_state.pipeline,
         );
 
-        init_state.device.cmd_set_viewport(
-            command_buffer,
-            0,
-            &[vk::Viewport::default()
-                .x(0.0)
-                .y(0.0)
-                .width(swapchain_render_state.extent.width as f32)
-                .height(swapchain_render_state.extent.height as f32)
-                .min_depth(0.0)
-                .max_depth(1.0)],
-        );
-
-        init_state.device.cmd_set_scissor(
-            command_buffer,
-            0,
-            &[vk::Rect2D::default().extent(swapchain_render_state.extent)],
-        );
-
-        init_state.device.cmd_bind_vertex_buffers(
-            command_buffer,
-            0,
-            &[buffers_state.vertex_buffer],
-            &[0],
-        );
-        init_state.device.cmd_bind_index_buffer(
-            command_buffer,
-            buffers_state.index_buffer,
-            0,
-            vk::IndexType::UINT16,
-        );
         init_state.device.cmd_bind_descriptor_sets(
             command_buffer,
             vk::PipelineBindPoint::GRAPHICS,
@@ -1489,11 +1960,40 @@ impl CommandSyncState {
             &[],
         );
 
-        init_state
-            .device
-            .cmd_draw_indexed(command_buffer, INDICES.len() as u32, 1, 0, 0, 0);
+        pipeline_state.ray_tracing_loader.cmd_trace_rays(
+            command_buffer,
+            &pipeline_state.shader_binding_table.raygen_region,
+            &pipeline_state.shader_binding_table.miss_region,
+            &pipeline_state.shader_binding_table.hit_region,
+            &vk::StridedDeviceAddressRegionKHR::default(),
+            swapchain_render_state.extent.width,
+            swapchain_render_state.extent.height,
+            1,
+        );
 
-        init_state.device.cmd_end_render_pass(command_buffer);
+        init_state.device.cmd_pipeline_barrier(
+            command_buffer,
+            vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+            vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[vk::ImageMemoryBarrier::default()
+                .old_layout(vk::ImageLayout::GENERAL)
+                .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                .dst_access_mask(vk::AccessFlags::NONE)
+                .image(swapchain_render_state.images[image_index as usize])
+                .subresource_range(
+                    vk::ImageSubresourceRange::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .base_mip_level(0)
+                        .level_count(1)
+                        .base_array_layer(0)
+                        .layer_count(1),
+                )],
+        );
+
         init_state.device.end_command_buffer(command_buffer)?;
 
         Ok(())

@@ -48,25 +48,22 @@ fn setup(
 
     commands.entity(window_entity).insert(wrapper);
 
-    let init_state = InitState::new(
-        "Hello",
-        1,
-        window.width(),
-        window.height(),
-        display_handle,
-        window_handle,
-    )
-    .unwrap();
+    let init_state = InitState::new("Hello", 1, display_handle, window_handle).unwrap();
 
     let swapchain_render_state =
         SwapchainRenderState::new(&init_state, Vec2::new(window.width(), window.height())).unwrap();
 
-    let pipeline_state = PipelineState::new(&init_state, &swapchain_render_state).unwrap();
+    let pipeline_state = PipelineState::new(&init_state).unwrap();
 
     let buffers_state = BuffersState::new(&init_state).unwrap();
 
-    let acceleration_structure_state =
-        AccelerationStructureState::new(&init_state, &pipeline_state, &buffers_state).unwrap();
+    let acceleration_structure_state = AccelerationStructureState::new(
+        &init_state,
+        &swapchain_render_state,
+        &pipeline_state,
+        &buffers_state,
+    )
+    .unwrap();
 
     let command_sync_state = CommandSyncState::new(&init_state).unwrap();
 

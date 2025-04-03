@@ -5,7 +5,7 @@ import sys
 def compile_shader(shader_path):
     output_path = shader_path.replace('shaders', 'bin') + ".spv"
 
-    command = ['glslc', shader_path, '-o', output_path]
+    command = ['glslc', shader_path, '-o', output_path, '--target-spv=spv1.6']
 
     try:
         subprocess.run(command, check=True)

@@ -48,7 +48,8 @@ impl CameraFov {
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct CameraGpu {
-    pub view_projection: [[f32; 4]; 4],
+    pub proj_inverse: [[f32; 4]; 4],
+    pub view_inverse: [[f32; 4]; 4],
 }
 
 impl CameraGpu {
@@ -58,17 +59,20 @@ impl CameraGpu {
         window_width: f32,
         window_height: f32,
     ) -> Self {
-        let view = transform.to_mat4().inverse();
+        let view_inverse = transform.to_mat4().to_cols_array_2d();
 
-        let projection = Mat4::perspective_rh(
+        let proj_inverse = Mat4::perspective_rh(
             fov_degrees.to_radians(),
             window_width / window_height,
             0.1,
             100.0,
-        );
+        )
+        .inverse()
+        .to_cols_array_2d();
 
         CameraGpu {
-            view_projection: (projection * view).to_cols_array_2d(),
+            view_inverse,
+            proj_inverse,
         }
     }
 }
