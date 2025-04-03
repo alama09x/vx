@@ -11,3 +11,4 @@ glam = "0.30.1"
 data = { path = "../data" }
 raw-window-handle = "0.6.2"
 bytemuck = "1.22.0"
+bevy_ecs = "0.15.3"

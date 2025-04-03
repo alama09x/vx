@@ -1946,6 +1946,7 @@ version = "0.1.0"
 dependencies = [
  "ash",
  "ash-window",
+ "bevy_ecs",
  "bytemuck",
  "data",
  "glam 0.30.1",

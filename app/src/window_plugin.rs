@@ -7,8 +7,10 @@ use bevy_ecs::{
 };
 use bevy_input::{keyboard::KeyCode, ButtonInput};
 use bevy_window::{CursorGrabMode, PrimaryWindow, Window, WindowFocused, WindowResized};
+use glam::Vec2;
+use renderer::{InitState, SwapchainRenderState};
 
-use crate::render_plugin::RenderState;
+use crate::render_plugin::CleanupEvent;
 
 pub struct WindowPlugin;
 
@@ -25,8 +27,13 @@ impl Plugin for WindowPlugin {
     }
 }
 
-fn close_window_on_escape(keys: Res<ButtonInput<KeyCode>>, mut exit_writer: EventWriter<AppExit>) {
+fn close_window_on_escape(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut cleanup_writer: EventWriter<CleanupEvent>,
+    mut exit_writer: EventWriter<AppExit>,
+) {
     if keys.just_pressed(KeyCode::Escape) {
+        cleanup_writer.send(CleanupEvent);
         exit_writer.send(AppExit::Success);
     }
 }
@@ -51,12 +58,12 @@ fn grab_cursor_at_center(
 
 fn recreate_swapchain(
     mut resized_reader: EventReader<WindowResized>,
-    mut state: ResMut<RenderState>,
+    init_state: Res<InitState>,
+    mut swapchain_render_state: ResMut<SwapchainRenderState>,
 ) {
     for resize in resized_reader.read() {
-        state
-            .0
-            .recreate_swapchain(resize.width, resize.height)
+        swapchain_render_state
+            .recreate_swapchain(&init_state, Vec2::new(resize.width, resize.height))
             .unwrap();
     }
 }
