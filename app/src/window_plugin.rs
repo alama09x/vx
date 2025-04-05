@@ -8,7 +8,10 @@ use bevy_ecs::{
 use bevy_input::{keyboard::KeyCode, ButtonInput};
 use bevy_window::{CursorGrabMode, PrimaryWindow, Window, WindowFocused, WindowResized};
 use glam::Vec2;
-use renderer::{InitState, SwapchainRenderState};
+use renderer::{
+    acceleration_structure_state::AccelerationStructureState, buffer_state::BufferState,
+    init_state::InitState, swapchain_state::SwapchainState,
+};
 
 use crate::render_plugin::CleanupEvent;
 
@@ -59,11 +62,18 @@ fn grab_cursor_at_center(
 fn recreate_swapchain(
     mut resized_reader: EventReader<WindowResized>,
     init_state: Res<InitState>,
-    mut swapchain_render_state: ResMut<SwapchainRenderState>,
+    mut swapchain_state: ResMut<SwapchainState>,
+    buffer_state: Res<BufferState<'static>>,
+    mut acceleration_structure_state: ResMut<AccelerationStructureState<'static>>,
 ) {
     for resize in resized_reader.read() {
-        swapchain_render_state
-            .recreate_swapchain(&init_state, Vec2::new(resize.width, resize.height))
+        swapchain_state
+            .recreate_swapchain(
+                &init_state,
+                &buffer_state,
+                &mut acceleration_structure_state,
+                Vec2::new(resize.width, resize.height),
+            )
             .unwrap();
     }
 }
