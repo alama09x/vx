@@ -230,13 +230,6 @@ impl<'a> PipelineState<'a> {
             &mut vk::PhysicalDeviceProperties2::default().push_next(&mut rt_properties),
         );
 
-        println!(
-            "RT Properties: handle_size={}, base_alignment={}, handle_alignment={}",
-            rt_properties.shader_group_handle_size,
-            rt_properties.shader_group_base_alignment,
-            rt_properties.shader_group_handle_alignment
-        );
-
         let handle_size = rt_properties.shader_group_handle_size as vk::DeviceSize;
         let group_count = 3;
 
@@ -289,13 +282,6 @@ impl<'a> PipelineState<'a> {
             (buffer_address + group_alignment - 1) & !(group_alignment - 1);
 
         let region_size = handle_size;
-        println!(
-            "SBT: raygen_addr={}, miss_addr={}, hit_addr={}, alignment={}",
-            aligned_buffer_address,
-            aligned_buffer_address + group_alignment,
-            aligned_buffer_address + group_alignment * 2,
-            group_alignment
-        );
         Ok(ShaderBindingTable {
             buffer,
             raygen_region: vk::StridedDeviceAddressRegionKHR::default()

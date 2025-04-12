@@ -1,0 +1,19 @@
+#version 460
+#extension GL_EXT_ray_tracing : enable
+layout(binding = 1, rgba8) uniform image2D output_image;
+
+void main() {
+    ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
+    ivec2 size = ivec2(gl_LaunchSizeEXT.xy);
+    
+    // Simple manual ray generation (bypassing matrices)
+    vec3 direction = normalize(vec3(
+        (pixel.x - size.x/2) / float(size.x),  // X: [-0.5, 0.5]
+        (size.y/2 - pixel.y) / float(size.y),  // Y: [-0.5, 0.5] (flipped)
+        -1.0                                   // Z: constant
+    ));
+    
+    // Visualize direction components
+    vec3 color = 0.5 + 0.5 * direction;
+    imageStore(output_image, pixel, vec4(color, 1.0));
+}

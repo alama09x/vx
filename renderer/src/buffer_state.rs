@@ -73,14 +73,16 @@ impl<'a> BufferState<'a> {
         command_fence: vk::Fence,
         transfer_queue: &Queue,
     ) -> VkResult<Buffer<'a>> {
+        let positions = VERTICES.map(|v| v.pos);
         Buffer::create_from_bytes_with_staging(
             instance,
             device,
             physical_device,
             command_fence,
             transfer_queue,
-            bytemuck::cast_slice(&VERTICES),
+            bytemuck::cast_slice(&positions),
             vk::BufferUsageFlags::VERTEX_BUFFER
+                | vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::TRANSFER_DST
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
                 | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
@@ -102,6 +104,7 @@ impl<'a> BufferState<'a> {
             transfer_queue,
             bytemuck::cast_slice(&INDICES),
             vk::BufferUsageFlags::INDEX_BUFFER
+                | vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::TRANSFER_DST
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
                 | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,

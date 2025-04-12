@@ -6,8 +6,8 @@ use data::camera::CameraGpu;
 
 use crate::{
     buffer::Buffer, buffer_state::BufferState, init_state::InitState,
-    pipeline_state::PipelineState, swapchain_state::SwapchainState, Vertex, INDICES,
-    MAX_FRAMES_IN_FLIGHT, VERTICES,
+    pipeline_state::PipelineState, swapchain_state::SwapchainState, INDICES, MAX_FRAMES_IN_FLIGHT,
+    VERTICES,
 };
 
 #[derive(Resource)]
@@ -103,6 +103,21 @@ impl<'a> AccelerationStructureState<'a> {
         pipeline_state: &PipelineState,
         buffer_state: &BufferState,
     ) -> Result<(vk::AccelerationStructureKHR, Buffer<'a>), Box<dyn Error>> {
+        let buffer_usage_flags =
+            vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
+
+        let transform_matrix = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+
+        let mut transform_matrix_buffer = Buffer::create(
+            init_state.instance(),
+            init_state.device(),
+            init_state.physical_device(),
+            mem::size_of_val(&transform_matrix) as u64,
+            buffer_usage_flags,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        )?;
+
         let vertex_address = pipeline_state
             .buffer_device_address_loader()
             .get_buffer_device_address(
@@ -117,38 +132,41 @@ impl<'a> AccelerationStructureState<'a> {
                     .buffer(buffer_state.index_buffer().handle()),
             );
 
-        println!("BLAS:");
-        println!("\tVertex buffer address: {}", vertex_address);
-        println!("\tIndex buffer address: {}", index_address);
-        println!(
-            "Vertex count: {}, Index count: {}",
-            VERTICES.len(),
-            INDICES.len()
-        );
+        let transform_matrix_address = pipeline_state
+            .buffer_device_address_loader()
+            .get_buffer_device_address(
+                &vk::BufferDeviceAddressInfo::default().buffer(transform_matrix_buffer.handle()),
+            );
 
-        let geometries = &[vk::AccelerationStructureGeometryKHR::default()
+        let geometry = vk::AccelerationStructureGeometryKHR::default()
             .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
+            .flags(vk::GeometryFlagsKHR::OPAQUE)
             .geometry(vk::AccelerationStructureGeometryDataKHR {
                 triangles: vk::AccelerationStructureGeometryTrianglesDataKHR::default()
                     .vertex_format(vk::Format::R32G32B32_SFLOAT)
                     .vertex_data(vk::DeviceOrHostAddressConstKHR {
                         device_address: vertex_address,
                     })
-                    .vertex_stride(mem::size_of::<Vertex>() as vk::DeviceSize)
+                    .vertex_stride(mem::size_of::<[f32; 3]>() as vk::DeviceSize)
                     .max_vertex(VERTICES.len() as u32 - 1)
                     .index_type(vk::IndexType::UINT16)
                     .index_data(vk::DeviceOrHostAddressConstKHR {
                         device_address: index_address,
+                    })
+                    .transform_data(vk::DeviceOrHostAddressConstKHR {
+                        device_address: transform_matrix_address,
                     }),
-            })];
+            });
+
+        let geometries = &[geometry];
+
+        let primitive_count = INDICES.len() as u32 / 3;
 
         let mut build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
             .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
             .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
             .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
             .geometries(geometries);
-
-        let primitive_count = INDICES.len() as u32 / 3;
 
         let mut size_info = vk::AccelerationStructureBuildSizesInfoKHR::default();
         loader.get_acceleration_structure_build_sizes(
@@ -157,17 +175,6 @@ impl<'a> AccelerationStructureState<'a> {
             &[primitive_count],
             &mut size_info,
         );
-
-        if size_info.acceleration_structure_size == 0 || size_info.build_scratch_size == 0 {
-            println!(
-                "BLAS size_info: accel_size={}, scratch_size={}",
-                size_info.acceleration_structure_size, size_info.build_scratch_size
-            );
-            return Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "BLAS build sizes are 0",
-            )));
-        }
 
         let buffer = Buffer::create(
             init_state.instance(),
@@ -225,7 +232,10 @@ impl<'a> AccelerationStructureState<'a> {
             command_buffer,
             &[build_info],
             &[&[vk::AccelerationStructureBuildRangeInfoKHR::default()
-                .primitive_count(INDICES.len() as u32 / 3)]],
+                .primitive_count(INDICES.len() as u32 / 3)
+                .primitive_offset(0)
+                .first_vertex(0)
+                .transform_offset(0)]],
         );
 
         init_state.device().end_command_buffer(command_buffer)?;
@@ -242,17 +252,13 @@ impl<'a> AccelerationStructureState<'a> {
             .wait_for_fences(&[fence], true, u64::MAX)?;
 
         scratch_buffer.cleanup(init_state.device());
+        transform_matrix_buffer.cleanup(init_state.device());
 
         init_state.device().free_command_buffers(
             init_state.queues().transfer().command_pool().unwrap(),
             &[command_buffer],
         );
 
-        println!(
-            "create_blas: BLAS handle={:?}, buffer={:?}",
-            acceleration_structure,
-            buffer.handle()
-        );
         Ok((acceleration_structure, buffer))
     }
 
@@ -263,7 +269,6 @@ impl<'a> AccelerationStructureState<'a> {
         pipeline_state: &PipelineState,
         blas: vk::AccelerationStructureKHR,
     ) -> Result<(vk::AccelerationStructureKHR, Buffer<'a>), Box<dyn Error>> {
-        println!("create_tlas: 1");
         let instance = vk::AccelerationStructureInstanceKHR {
             acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
                 device_handle: loader.get_acceleration_structure_device_address(
@@ -282,23 +287,15 @@ impl<'a> AccelerationStructureState<'a> {
             instance_custom_index_and_mask: vk::Packed24_8::new(0, 0xFF),
             instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
                 0,
+                // vk::GeometryInstanceFlagsKHR::default().as_raw() as u8,
                 vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw() as u8,
             ),
         };
-
-        println!(
-            "create_tlas: Instance ref={:?}, transform={:?}, custom_index_mask={:?}, sbt_flags={:?}",
-            instance.acceleration_structure_reference.device_handle,
-            instance.transform.matrix,
-            instance.instance_custom_index_and_mask,
-            instance.instance_shader_binding_table_record_offset_and_flags
-        );
 
         let bytes = slice::from_raw_parts(
             (&instance as *const _) as *const u8,
             mem::size_of_val(&instance),
         );
-        println!("create_tlas: Bytes size={}, data={:?}", bytes.len(), bytes);
 
         let mut instances_buffer = Buffer::create_from_bytes_with_staging(
             init_state.instance(),
@@ -310,7 +307,6 @@ impl<'a> AccelerationStructureState<'a> {
             vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
         )?;
-        println!("create_tlas: Instances buffer created");
 
         let geometries = [vk::AccelerationStructureGeometryKHR::default()
             .geometry_type(vk::GeometryTypeKHR::INSTANCES)
@@ -340,17 +336,6 @@ impl<'a> AccelerationStructureState<'a> {
             &[1], // One instance (the cube BLAS)
             &mut size_info,
         );
-
-        if size_info.acceleration_structure_size == 0 || size_info.build_scratch_size == 0 {
-            println!(
-                "TLAS size_info: accel_size={}, scratch_size={}",
-                size_info.acceleration_structure_size, size_info.build_scratch_size
-            );
-            return Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "TLAS build sizes are 0",
-            )));
-        }
 
         let tlas_buffer = Buffer::create(
             init_state.instance(),

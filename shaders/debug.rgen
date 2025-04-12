@@ -1,0 +1,39 @@
+#version 460
+#extension GL_EXT_ray_tracing : enable
+layout(binding = 1, rgba8) uniform image2D output_image;
+layout(binding = 2) uniform Camera {
+    mat4 view_inverse;
+    mat4 proj_inverse;
+} camera;
+
+void main() {
+    ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
+    
+    // Fixed ray generation
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(gl_LaunchSizeEXT.xy);
+    vec2 ndc = 2.0 * uv - 1.0;
+    ndc.y *= -1.0;  // Vulkan Y flip
+    ndc.x *= -1.0;  // Fix left/right flip <<< NEW
+    
+    vec4 ray_clip = vec4(ndc, 1.0, 1.0);
+    vec4 ray_eye = camera.proj_inverse * ray_clip;
+    ray_eye /= ray_eye.w;
+    
+    vec3 direction = normalize(vec3(ray_eye.xy, -1.0));
+    vec3 origin = (camera.view_inverse * vec4(0,0,0,1)).xyz;
+    
+    // Visual debug
+    vec4 color;
+    if (pixel.x == int(gl_LaunchSizeEXT.x/2) && pixel.y == int(gl_LaunchSizeEXT.y/2)) {
+        color = vec4(0,0,1,1); // Center = blue
+    } else {
+        color = vec4(0.5 + 0.5 * direction, 1.0);
+    }
+    
+    // Force sphere visualization
+    if (length(origin + direction * 15.9) < 0.5) {
+        color = vec4(1); // White sphere
+    }
+    
+    imageStore(output_image, pixel, color);
+}

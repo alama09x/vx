@@ -136,6 +136,13 @@ impl CommandState {
         current_frame: u8,
     ) -> VkResult<()> {
         buffer_state.uniform_buffers_mut()[current_frame as usize].write(camera_gpu.to_bytes());
+        // let mapped = buffer_state.uniform_buffers()[current_frame as usize]
+        //     .mapped()
+        //     .as_ref()
+        //     .unwrap();
+        // let camera_data: &CameraGpu = bytemuck::from_bytes(mapped);
+        // println!("GPU View Inverse:\n{:?}", camera_data.view_inverse);
+        // println!("GPU Proj Inverse:\n{:?}", camera_data.proj_inverse);
         Ok(())
     }
 

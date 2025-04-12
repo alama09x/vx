@@ -1,0 +1,44 @@
+#version 460
+#extension GL_EXT_ray_tracing : enable
+
+layout(binding = 1, rgba8) uniform image2D output_image;
+layout(binding = 2) uniform Camera {
+    mat4 view_inverse;
+    mat4 proj_inverse;
+} camera;
+
+void main() {
+    ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(gl_LaunchSizeEXT.xy);
+    
+    // 1. Generate clip-space ray (Vulkan: Y-down, Z-[0,1])
+    vec4 ray_clip = vec4(uv * 2.0 - 1.0, 1.0, 1.0);
+    ray_clip.y *= -1; // Flip Y for Vulkan
+
+    // 2. Transform to eye space
+    vec4 ray_eye = camera.proj_inverse * ray_clip;
+    ray_eye = vec4(ray_eye.xy, -1.0, 0.0); // Direction toward -Z
+
+    // 3. Transform to world space
+    vec3 origin = (camera.view_inverse * vec4(0, 0, 0, 1)).xyz;
+    vec3 direction = normalize((camera.view_inverse * ray_eye).xyz);
+
+    // 4. Sphere intersection (center at origin, radius 0.5)
+    vec3 sphere_center = vec3(0.0);
+    float sphere_radius = 0.5;
+    vec3 oc = origin - sphere_center;
+    
+    // Simplified intersection test
+    float b = dot(oc, direction);
+    float c = dot(oc, oc) - sphere_radius*sphere_radius;
+    float h = b*b - c;
+    
+    vec3 color = vec3(0.1, 0.1, 0.3); // Miss color
+    if (h > 0.0) {
+        float t = -b - sqrt(h);
+        vec3 hit = origin + t * direction;
+        color = 0.5 + 0.5 * normalize(hit - sphere_center);
+    }
+
+    imageStore(output_image, pixel, vec4(color, 1.0));
+}

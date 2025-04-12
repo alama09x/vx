@@ -2,7 +2,7 @@ use std::{f32, slice};
 
 use bevy_ecs::component::Component;
 use bytemuck::{Pod, Zeroable};
-use glam::Mat4;
+use glam::{Mat4, Vec3};
 
 use crate::{transform::Transform, IntoBytes};
 
@@ -59,16 +59,21 @@ impl CameraGpu {
         window_width: f32,
         window_height: f32,
     ) -> Self {
-        let view_inverse = transform.to_mat4().to_cols_array_2d();
+        let view = Mat4::look_to_rh(
+            transform.translation,
+            transform.rotation * Vec3::NEG_Z,
+            Vec3::Y,
+        );
 
-        let proj_inverse = Mat4::perspective_rh(
+        let proj = Mat4::perspective_rh(
             fov_degrees.to_radians(),
             window_width / window_height,
             0.1,
             100.0,
-        )
-        .inverse()
-        .to_cols_array_2d();
+        );
+
+        let view_inverse = view.inverse().to_cols_array_2d();
+        let proj_inverse = proj.inverse().to_cols_array_2d();
 
         CameraGpu {
             view_inverse,

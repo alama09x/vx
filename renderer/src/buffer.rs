@@ -20,6 +20,10 @@ impl<'a> Buffer<'a> {
         self.memory
     }
 
+    pub const fn mapped(&self) -> &Option<&'a mut [u8]> {
+        &self.mapped
+    }
+
     pub const fn mapped_mut(&mut self) -> &mut Option<&'a mut [u8]> {
         &mut self.mapped
     }
